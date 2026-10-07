@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f6f8ff"><title>Admin access · SWAYAMBHU 2026</title>
+  <link rel="icon" type="image/png" sizes="256x256" href="{{ url_for('static', filename='favicon.png') }}">
+  <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}">
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='apple-touch-icon.png') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
+</head>
+<body class="login-page login-redesign">
+  <main class="login-shell">
+    <div class="login-brand">{% include '_festival_logo.html' %}<div class="login-brand-copy"><strong>AI QR QUEST</strong><span>Swayambhu 2026</span><small>JNEC · MGM University</small></div></div>
+    <div class="login-intro"><p class="eyebrow">EVENT OPERATIONS</p><h1>Run the quest.</h1><p class="login-copy">Sign in to manage teams, rounds and event operations.</p></div>
+    <div class="login-event-meta"><span><b>17</b> OCTOBER 2026</span><span>ENTC Department · JNEC</span></div>
+    {% with messages = get_flashed_messages(with_categories=true) %}{% for category, message in messages %}<div class="notice error" role="alert">{{ message }}</div>{% endfor %}{% endwith %}
+    <form method="post" class="login-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label for="admin-username">Username<input id="admin-username" name="username" autocomplete="username" placeholder="Enter your username" required autofocus></label>
+      <label for="admin-password">Password<input id="admin-password" name="password" type="password" autocomplete="current-password" placeholder="Enter your password" required></label>
+      <button class="button primary wide" type="submit">Sign in <span aria-hidden="true">→</span></button>
+    </form>
+    <p class="login-help">Authorized event staff only.</p>
+    <footer class="login-links"><a href="{{ url_for('auth.team_login') }}">Participant sign in <span aria-hidden="true">→</span></a><span class="login-assurance">Private staff access</span></footer>
+  </main>
+  {% include '_login_event.html' %}
+  <script src="{{ url_for('static', filename='js/ux.js') }}"></script>
+</body>
+</html>
