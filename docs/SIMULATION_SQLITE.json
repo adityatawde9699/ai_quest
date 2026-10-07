@@ -1,0 +1,42 @@
+[
+  {
+    "teams": 10,
+    "workers": 10,
+    "database": "sqlite",
+    "requests": 290,
+    "seconds": 4.01,
+    "p95_ms": 108.02,
+    "distinct_final_sequences": 10,
+    "status": "PASS"
+  },
+  {
+    "teams": 25,
+    "workers": 20,
+    "database": "sqlite",
+    "requests": 724,
+    "seconds": 8.77,
+    "p95_ms": 737.73,
+    "distinct_final_sequences": 25,
+    "status": "PASS"
+  },
+  {
+    "teams": 50,
+    "workers": 20,
+    "database": "sqlite",
+    "requests": 1450,
+    "seconds": 17.23,
+    "p95_ms": 942.01,
+    "distinct_final_sequences": 49,
+    "status": "PASS"
+  },
+  {
+    "teams": 100,
+    "workers": 20,
+    "database": "sqlite",
+    "requests": 2900,
+    "seconds": 34.21,
+    "p95_ms": 1037.27,
+    "distinct_final_sequences": 97,
+    "status": "PASS"
+  }
+]
