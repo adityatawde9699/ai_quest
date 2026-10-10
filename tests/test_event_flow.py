@@ -3,7 +3,7 @@ import unittest
 from datetime import timedelta
 from app import create_app
 from extensions import db, socketio
-from models import (ActivityLog, Admin, Answer, Batch, Desktop, DesktopSession, Event, FinalAnswer,
+from models import (OfflineRound3, ActivityLog, Admin, Answer, Batch, Desktop, DesktopSession, Event, FinalAnswer,
                     FinalAssignment, PasswordAttempt, QRChallenge, QRScanEvent, Question,
                     Quiz, QuizAttempt, QuizQuestion, Round, RoundSession, Score, Team, utcnow)
 from routes.common import emit_leaderboard
@@ -37,12 +37,7 @@ def seed_content():
                     clue="Many pages, quiet shelves",room="Library",status="ACTIVE")
     qr2=QRChallenge(qr_id="QR-LIBRARY",secure_token="round2-token",round_id=2,
                     quiz_id=quiz.id,room="Library",status="ACTIVE")
-    qr3=QRChallenge(qr_id="DESKTOP-QR",secure_token="round3-token",round_id=3,
-                    clue="The answer to life",status="ACTIVE")
-    db.session.add_all([qr1,qr2,qr3]);db.session.flush()
-    desktop=Desktop(name="DESKTOP-01",qr_id=qr3.id)
-    desktop.set_password("forty-two")
-    db.session.add(desktop);db.session.commit()
+    db.session.add_all([qr1,qr2]);db.session.commit()
     return qr1.id
 
 
@@ -100,20 +95,35 @@ class EventFlowTests(unittest.TestCase):
         self.assertEqual(client.post('/api/team/quiz/submit',json={}).status_code,200)
         return questions
 
-    def desktop(self):
+    def configure_round3(self, client=None, token='round3-token'):
+        client = client or self.team
+        team_id = client.get('/api/team/dashboard').get_json()['team']['id']
+        created = self.admin.post('/api/admin/round3', json={
+            'team_id': team_id, 'password_clue': 'The answer to life', 'password': 'forty-two',
+'room': 'Library', 'max_points': 100})
+        self.assertEqual(created.status_code, 201, created.get_json())
+        config = created.get_json()
+        with self.app.app_context():
+            db.session.get(QRChallenge, config['password_qr_id']).secure_token = token
+            db.session.commit()
+        self.assertEqual(self.admin.post(f"/api/admin/round3/{config['id']}/activate", json={}).status_code, 200)
+        return config['id']
+
+    def round3(self):
         self.quiz()
+        self.config_id = self.configure_round3()
         self.assertEqual(self.scan('round3-token').status_code,200)
 
-    def final(self):
-        self.desktop()
-        result=self.team.post('/api/team/desktop/password',json={'password':'forty-two'})
-        self.assertEqual(result.status_code,200)
-        questions=self.team.get('/api/team/final').get_json()['questions']
-        for q in questions:
-            self.assertEqual(self.team.put(f"/api/team/final/answers/{q['id']}",json={'answer':'42'}).status_code,200)
-        result=self.team.post('/api/team/final/submit',json={})
-        self.assertEqual(result.status_code,200,result.get_json())
-        return questions
+    def final(self, review=True):
+        self.round3()
+        result=self.team.post('/api/team/round3/password',json={'password':'forty-two'})
+        self.assertEqual(result.status_code,200, result.get_json())
+        for action, payload in [('sheet', {'path':'PASSWORD'}), ('submit', {})]:
+            result=self.admin.post(f'/api/admin/round3/{self.config_id}/{action}', json=payload)
+            self.assertEqual(result.status_code,200,result.get_json())
+        if review:
+            result=self.admin.post(f'/api/admin/round3/{self.config_id}/review',json={'points':15,'reason':'Physical sheet evaluated'})
+            self.assertEqual(result.status_code,200,result.get_json())
 
     def test_auth_and_invalid_credentials(self):
         client=self.app.test_client()
@@ -123,7 +133,7 @@ class EventFlowTests(unittest.TestCase):
         self.assertEqual(self.team.get('/api/overview').status_code,403)
         self.assertEqual(self.team.post('/api/admin/teams/1/score',json={'points':100}).status_code,403)
 
-    def test_rolling_batches_release_on_first_desktop_entry(self):
+    def test_rolling_batches_release_on_first_round3_entry(self):
         from models import Batch
         others=[self.new_team() for _ in range(9)]
         batches=self.admin.get('/api/admin/batches').get_json()['batches']
@@ -133,7 +143,7 @@ class EventFlowTests(unittest.TestCase):
         self.assertIn('waiting for release',waiting.post('/api/team/rounds/1/start',json={}).get_json()['error'])
         self.round1(others[0][0])
         self.assertEqual(self.admin.get('/api/admin/batches').get_json()['batches'][1]['status'],'WAITING')
-        self.desktop()
+        self.round3()
         batches=self.admin.get('/api/admin/batches').get_json()['batches']
         self.assertEqual(batches[1]['status'],'RELEASED')
         self.assertIsNotNone(batches[0]['triggered_at'])
@@ -277,14 +287,14 @@ class EventFlowTests(unittest.TestCase):
         self.assertEqual(judge.post(f"/api/admin/batches/{second['id']}/release",json={'reason':'early'}).status_code,403)
         self.assertEqual(self.admin.post(f"/api/admin/batches/{second['id']}/release",json={'reason':'early'}).status_code,200)
         self.assertEqual(self.admin.post('/api/admin/batches',json={}).status_code,201)
-        self.desktop()
+        self.round3()
         self.assertEqual(self.admin.get('/api/admin/batches').get_json()['batches'][2]['status'],'WAITING')
         with self.app.app_context():
             self.assertEqual(ActivityLog.query.filter_by(action='BATCH_RELEASED',target='2').count(),1)
 
     def test_empty_next_batch_releases_when_team_is_assigned(self):
         self.assertEqual(self.admin.post('/api/admin/batches',json={}).status_code,201)
-        self.desktop()
+        self.round3()
         self.assertEqual(self.admin.get('/api/admin/batches').get_json()['batches'][1]['status'],'WAITING')
         later,_=self.new_team()
         self.assertEqual(later.get('/api/team/dashboard').get_json()['team']['batch_status'],'RELEASED')
@@ -357,7 +367,7 @@ class EventFlowTests(unittest.TestCase):
         self.assertEqual(self.scan('other').status_code,409)
         self.assertEqual(self.team.post('/api/team/rounds/1/complete',json={}).status_code,409)
         self.assertEqual(self.team.post('/api/team/rounds/3/start',json={}).status_code,409)
-        self.assertEqual(self.team.get('/api/team/final').status_code,409)
+        self.assertEqual(self.team.get('/api/team/final').status_code,410)
 
     def test_pause_preserves_state_and_end_does_not_complete(self):
         self.team.post('/api/team/rounds/1/start',json={})
@@ -400,45 +410,46 @@ class EventFlowTests(unittest.TestCase):
         self.assertEqual(self.team.get('/api/admin/assignments').status_code,403)
         self.assertEqual(self.team.get('/api/admin/export/quiz-results.csv').status_code,403)
 
-    def test_three_failed_password_attempts_unlock_and_persist(self):
-        self.desktop()
+    def test_three_failed_password_attempts_persist_without_sheet_access(self):
+        self.round3()
         for i in range(3):
-            response=self.team.post('/api/team/desktop/password',json={'password':'wrong','attempts':0})
+            response=self.team.post('/api/team/round3/password',json={'password':'wrong','attempts':0})
             self.assertEqual(response.status_code,200,response.get_json())
             self.assertEqual(response.get_json()['attempts_remaining'],2-i)
-            self.assertEqual(response.get_json()['unlocked'],i==2)
-        self.assertEqual(self.team.post('/api/team/desktop/password',json={'password':'forty-two'}).status_code,409)
+            self.assertFalse(response.get_json()['password_solved'])
+        self.assertEqual(self.team.post('/api/team/round3/password',json={'password':'forty-two'}).status_code,409)
         client=self.app.test_client();client.post('/team/login',data={'team_id':self.credentials['team']['team_id'],'pin':self.credentials['login_pin']})
-        self.assertEqual(client.get('/api/team/desktop').get_json()['attempts_remaining'],0)
+        self.assertEqual(client.get('/api/team/round3').get_json()['attempts_remaining'],0)
+        self.assertEqual(self.admin.post(f'/api/admin/round3/{self.config_id}/sheet',json={'path':'PASSWORD'}).status_code,409)
         with self.app.app_context():
-            self.assertEqual(PasswordAttempt.query.count(),3)
-            self.assertEqual(DesktopSession.query.one().password_attempts,3)
-            self.assertEqual(FinalAssignment.query.count(),1)
+            self.assertEqual(OfflineRound3.query.one().password_attempts,3)
+            self.assertEqual(ActivityLog.query.filter_by(action='OFFLINE_PASSWORD_ATTEMPT').count(),3)
+            self.assertEqual(FinalAssignment.query.count(),0)
 
-    def test_successful_password_and_fixed_random_assignments(self):
-        self.desktop()
-        response=self.team.post('/api/team/desktop/password',json={'password':'forty-two'})
-        self.assertTrue(response.get_json()['unlocked'])
-        first=self.team.get('/api/team/final').get_json()['questions']
-        self.assertEqual(first,self.team.get('/api/team/final').get_json()['questions'])
-        self.assertEqual(len(first),3);self.assertEqual(len({q['id'] for q in first}),3)
-        self.assertNotIn('correct_answer',str(first))
-        self.assertEqual(self.team.post('/api/team/desktop/password',json={'password':'anything'}).status_code,409)
+    def test_successful_password_qualifies_for_organizer_sheet(self):
+        self.round3()
+        response=self.team.post('/api/team/round3/password',json={'password':'forty-two'})
+        self.assertTrue(response.get_json()['password_solved'])
+        self.assertIn('organizer', response.get_json()['message'])
+        self.assertNotIn('questions',response.get_json())
+        self.assertEqual(self.team.post('/api/team/round3/password',json={'password':'anything'}).status_code,409)
+        self.assertEqual(self.admin.post(f'/api/admin/round3/{self.config_id}/sheet',json={'path':'PASSWORD'}).status_code,200)
 
-    def test_desktop_exclusivity(self):
-        self.desktop()
+    def test_round3_team_assignment_exclusivity(self):
+        self.round3()
         other,_=self.new_team();self.quiz(other)
         self.assertEqual(self.scan('round3-token',other).status_code,409)
         with self.app.app_context():
-            self.assertEqual(DesktopSession.query.count(),1)
-        self.assertEqual(other.get('/desktop/1').status_code,403)
+            self.assertEqual(OfflineRound3.query.count(),1)
+            self.assertEqual(DesktopSession.query.count(),0)
+        self.assertEqual(other.get('/desktop/1').status_code,410)
 
-    def test_final_submission_immutable_and_scores(self):
-        questions=self.final()
-        self.assertEqual(self.team.post('/api/team/final/submit',json={}).status_code,409)
-        self.assertEqual(self.team.put(f"/api/team/final/answers/{questions[0]['id']}",json={'answer':'0'}).status_code,409)
+    def test_paper_submission_immutable_and_scores(self):
+        self.final()
+        self.assertEqual(self.admin.post(f'/api/admin/round3/{self.config_id}/submit',json={}).status_code,409)
+        self.assertEqual(self.team.post('/api/team/final/submit',json={}).status_code,410)
         with self.app.app_context():
-            self.assertTrue(FinalAssignment.query.one().reviewed)
+            self.assertIsNotNone(OfflineRound3.query.one().reviewed_at)
             self.assertEqual(Score.query.filter_by(round_id=3).one().points,15)
             self.assertEqual(db.session.get(Team,self.credentials['team']['id']).state,'COMPLETED')
 
@@ -461,11 +472,11 @@ class EventFlowTests(unittest.TestCase):
         judge=self.app.test_client();judge.post('/admin/login',data={'username':'judge','password':'a-secure-test-password'})
         self.assertEqual(judge.patch('/api/admin/event',json={'active':False}).status_code,403)
         self.assertEqual(judge.post('/api/admin/test-reset',json={}).status_code,403)
-        for kind in ('teams','scans','quiz-responses','quiz-results','final-answers','scores','leaderboard','logs'):
+        for kind in ('teams','scans','quiz-responses','quiz-results','round3-sheets','scores','leaderboard','logs'):
             self.assertEqual(self.admin.get(f'/api/admin/export/{kind}.csv').status_code,200)
         self.assertEqual(self.admin.get('/api/qrs/download').status_code,200)
         self.assertEqual(self.admin.get('/admin/qrs/print').status_code,200)
-        self.assertEqual(self.admin.get('/station/1').status_code,200)
+        self.assertEqual(self.admin.get('/station/1').status_code,410)
         self.assertEqual(self.admin.post('/api/admin/test-reset',json={'confirmation':'RESET TEST PROGRESS'}).status_code,409)
         self.app.config['EVENT_MODE']='PRODUCTION'
         self.assertEqual(self.admin.post('/api/admin/test-reset',json={'confirmation':'RESET TEST PROGRESS'}).status_code,403)
@@ -479,15 +490,11 @@ class EventFlowTests(unittest.TestCase):
         self.assertEqual(participant.get_received(),[])
         participant.disconnect()
 
-    def test_manual_final_review_and_lock_staleness(self):
-        with self.app.app_context():
-            for q in Question.query.filter_by(round_id=3):q.kind='SHORT ANSWER'
-            db.session.commit()
-        self.final()
+    def test_manual_sheet_review_and_lock_staleness(self):
+        self.final(review=False)
         for n in (1,2,3):self.admin.post(f'/api/rounds/{n}/end',json={})
         self.assertEqual(self.admin.post('/api/results/generate',json={}).status_code,409)
-        assignment=self.admin.get('/api/admin/assignments').get_json()[0]
-        review=self.admin.post(f"/api/admin/assignments/{assignment['id']}/review",json={'points':{str(q['id']):3 for q in assignment['questions']}})
+        review=self.admin.post(f'/api/admin/round3/{self.config_id}/review',json={'points':9,'reason':'Paper judged'})
         self.assertEqual(review.status_code,200)
         self.assertEqual(self.admin.post('/api/results/generate',json={}).status_code,201)
         self.admin.post(f"/api/admin/teams/{self.credentials['team']['id']}/score",json={'bonus':5,'reason':'judge adjustment'})
@@ -501,7 +508,7 @@ class EventFlowTests(unittest.TestCase):
             self.assertEqual(Team.query.count(),0)
             self.assertEqual(PasswordAttempt.query.count(),0)
             self.assertEqual(Question.query.count(),22)
-            self.assertEqual(Desktop.query.count(),1)
+            self.assertEqual(OfflineRound3.query.count(),0)
             self.assertEqual(Admin.query.count(),2)
             self.assertEqual(ActivityLog.query.one().action,'TEST_RESET')
 
@@ -553,6 +560,115 @@ class EventFlowTests(unittest.TestCase):
         response=self.team.post('/api/team/scan',json={'token':'round1-token'})
         self.assertEqual(response.status_code,400)
         self.assertIn('CSRF',response.get_json()['error'])
+
+    def test_hidden_sheet_path_is_rejected(self):
+        self.round3()
+        response=self.admin.post(f'/api/admin/round3/{self.config_id}/sheet',json={'path':'LOCATION'})
+        self.assertEqual(response.status_code,400)
+        self.assertEqual(self.scan('round3-token-location').status_code,404)
+        state=self.team.get('/api/team/round3').get_json()
+        self.assertNotIn('location_clue',state)
+        with self.app.app_context():
+            self.assertEqual(QRChallenge.query.filter_by(round_id=3).count(),1)
+
+    def test_round3_scan_releases_only_one_batch_and_preserves_riddle(self):
+        for _ in range(5):self.new_team()
+        self.round3()
+        self.assertEqual(self.scan('round3-token').status_code,409)
+        state=self.team.get('/api/team/round3').get_json()
+        self.assertTrue(state['password_clue'])
+        self.assertNotIn('password_hash',state)
+        self.assertEqual(state['attempts_remaining'],3)
+        with self.app.app_context():
+            self.assertEqual(ActivityLog.query.filter_by(action='BATCH_RELEASED',target='2').count(),1)
+            self.assertEqual(RoundSession.query.filter_by(round_id=3).count(),1)
+
+    def test_round3_configuration_and_qr_assignment_are_frozen_after_entry(self):
+        self.round3()
+        row=self.admin.get('/api/admin/round3').get_json()[0]
+        for qr_id in (row['password_qr_id'],):
+            self.assertEqual(self.admin.delete(f'/api/qrs/{qr_id}').status_code,409)
+            self.assertEqual(self.admin.patch(f'/api/qrs/{qr_id}',json={'round_id':1}).status_code,409)
+            self.assertEqual(self.admin.post(f'/api/qrs/{qr_id}/regenerate',json={}).status_code,409)
+        self.assertEqual(self.admin.patch(f'/api/admin/round3/{self.config_id}',json={'password':'new'}).status_code,409)
+        self.assertEqual(self.admin.patch(f"/api/qrs/{row['password_qr_id']}",json={'clue':'Changed'}).status_code,409)
+
+    def test_round3_validation_and_admin_boundaries(self):
+        self.assertEqual(self.team.post('/api/admin/round3',json={}).status_code,403)
+        self.assertEqual(self.admin.post('/api/admin/round3',json={'team_id':self.credentials['team']['id'],'password':'secret'}).status_code,400)
+        self.assertEqual(self.team.get('/api/team/round3').get_json(),{'configured':False})
+        config_id=self.configure_round3()
+        self.assertEqual(self.scan('round3-token').status_code,409)
+        self.assertEqual(self.team.post(f'/api/admin/round3/{config_id}/sheet',json={'path':'PASSWORD'}).status_code,403)
+        self.assertEqual(self.admin.post(f'/api/admin/round3/{config_id}/submit',json={}).status_code,409)
+        self.assertEqual(self.admin.post(f'/api/admin/round3/{config_id}/review',json={'points':10,'reason':'Premature'}).status_code,409)
+        self.assertEqual(self.admin.post('/api/admin/round3',json={'team_id':self.credentials['team']['id']}).status_code,409)
+        state=self.team.get('/api/team/dashboard').get_json()['round3']
+        self.assertIsNone(state['password_clue']);self.assertNotIn('location_clue',state)
+
+    def test_password_works_without_online_bank_and_respects_pause(self):
+        self.round3()
+        with self.app.app_context():
+            Question.query.filter_by(round_id=3).delete();db.session.commit()
+        self.admin.post('/api/rounds/3/pause',json={})
+        self.assertEqual(self.team.post('/api/team/round3/password',json={'password':'forty-two'}).status_code,409)
+        self.assertEqual(self.team.get('/api/team/round3').get_json()['attempts_remaining'],3)
+        self.admin.post('/api/rounds/3/resume',json={})
+        self.assertTrue(self.team.post('/api/team/round3/password',json={'password':'forty-two'}).get_json()['password_solved'])
+        with self.app.app_context():self.assertEqual(FinalAssignment.query.count(),0)
+
+    def test_human_marks_require_returned_sheet_and_respect_limits_and_locks(self):
+        self.final(review=False)
+        review=f'/api/admin/round3/{self.config_id}/review'
+        for payload in ({'points':101,'reason':'Too high'},{'points':-1,'reason':'Negative'},{'points':10}):
+            self.assertEqual(self.admin.post(review,json=payload).status_code,400)
+        self.assertEqual(self.admin.post(f"/api/admin/teams/{self.credentials['team']['id']}/score",json={'round_id':3,'points':10,'reason':'Bypass'}).status_code,409)
+        self.assertEqual(self.admin.post(review,json={'points':10,'reason':'Judged'}).status_code,200)
+        self.assertEqual(self.admin.post(review,json={'points':12,'reason':'Rechecked'}).status_code,200)
+        with self.app.app_context():
+            self.assertEqual(Score.query.filter_by(round_id=3).one().points,12)
+            db.session.get(Event,1).results_locked=True;db.session.commit()
+        self.assertEqual(self.admin.post(review,json={'points':15,'reason':'Locked'}).status_code,409)
+
+
+    def test_team_completion_stops_time_and_admin_receipt_preserves_it(self):
+        self.round3()
+        self.assertEqual(self.team.post('/api/team/round3/complete',json={}).status_code,409)
+        self.team.post('/api/team/round3/password',json={'password':'forty-two'})
+        with self.app.app_context():
+            sessions=RoundSession.query.filter_by(team_id=self.credentials['team']['id']).order_by(RoundSession.round_id).all()
+            now=utcnow()
+            for session,seconds in zip(sessions,[20,30,60]):
+                session.started_at=now-timedelta(seconds=seconds)
+                if session.status=='COMPLETED':session.ended_at=now
+            db.session.commit()
+        result=self.team.post('/api/team/round3/complete',json={'elapsed_seconds':0})
+        self.assertEqual(result.status_code,200,result.get_json())
+        summary=self.team.get('/api/team/dashboard').get_json()
+        self.assertEqual(summary['team']['state'],'COMPLETED')
+        self.assertFalse(summary['session_active'])
+        self.assertGreaterEqual(summary['elapsed_seconds'],110)
+        finished=summary['round3']['completed_at']
+        self.assertIsNotNone(finished)
+        self.assertIsNone(summary['round3']['submitted_at'])
+        self.assertEqual(self.team.post('/api/team/round3/complete',json={}).status_code,409)
+        self.assertEqual(self.admin.post(f'/api/admin/round3/{self.config_id}/sheet',json={}).status_code,200)
+        self.assertEqual(self.admin.post(f'/api/admin/round3/{self.config_id}/submit',json={}).status_code,200)
+        after=self.team.get('/api/team/dashboard').get_json()
+        self.assertEqual(after['round3']['completed_at'],finished)
+        self.assertEqual(after['elapsed_seconds'],summary['elapsed_seconds'])
+        self.assertEqual(self.admin.post(f'/api/admin/round3/{self.config_id}/review',json={'points':50,'reason':'Paper judged'}).status_code,200)
+        self.assertEqual(self.team.get('/api/team/dashboard').get_json()['elapsed_seconds'],summary['elapsed_seconds'])
+
+    def test_team_completion_requires_active_round_and_authorized_team(self):
+        self.assertEqual(self.app.test_client().post('/api/team/round3/complete',json={}).status_code,403)
+        self.assertEqual(self.team.post('/api/team/round3/complete',json={}).status_code,409)
+        self.round3()
+        self.team.post('/api/team/round3/password',json={'password':'forty-two'})
+        self.admin.post('/api/rounds/3/pause',json={})
+        self.assertEqual(self.team.post('/api/team/round3/complete',json={}).status_code,409)
+        self.admin.post('/api/rounds/3/resume',json={})
+        self.assertEqual(self.team.post('/api/team/round3/complete',json={}).status_code,200)
 
 
 if __name__=='__main__':unittest.main()

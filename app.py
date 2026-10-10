@@ -147,7 +147,7 @@ def initialize_database(app):
         rounds = [
             (1, "QR Riddle", "READY"),
             (2, "Quiz Challenge", "LOCKED"),
-            (3, "Desktop Final Challenge", "LOCKED"),
+            (3, "Offline Sheet Challenge", "LOCKED"),
         ]
         for number, name, status in rounds:
             if not Round.query.filter_by(number=number).first():

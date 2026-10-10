@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from extensions import db
-from models import Answer, Desktop, Question, QRChallenge, QRScanEvent, Round, RoundSession, ScanLog, Score, Team, utcnow
+from models import OfflineRound3, Answer, Desktop, Question, QRChallenge, QRScanEvent, Round, RoundSession, ScanLog, Score, Team, utcnow
 from routes.common import admin_required, audit, emit_activity, emit_leaderboard, iso_utc, super_admin_required, team_required
 from utils.qr_generator import render_qr, scan_url
 from utils.security import new_qr_token
@@ -111,6 +111,12 @@ def create_qr():
                                 title=title, clue=clue, expires_at=expires_at)
         db.session.add(challenge)
         challenges.append(challenge)
+    if event_round.number == 3:
+        if question:
+            from services.event import EventError
+            raise EventError("Round 3 uses a password riddle and offline sheets; do not attach an online question.", 400)
+        from routes.operations import create_round3_config
+        create_round3_config({**data, "password_clue": clue}, qr=challenges[0])
     db.session.flush()
     audit("QR generated", challenges[0].qr_id, {"round": event_round.number, "count": count})
     db.session.commit()
@@ -140,7 +146,8 @@ def permanently_delete_qr(qr_pk):
     if (ScanLog.query.filter_by(qr_id=challenge.id).first()
             or any(row.status == "VALID" for row in scan_events)
             or Team.query.filter_by(assigned_qr_id=challenge.id).first()
-            or Desktop.query.filter_by(qr_id=challenge.id).first()):
+            or Desktop.query.filter_by(qr_id=challenge.id).first()
+            or offline_qr_config(challenge.id)):
         return jsonify(error="This QR has scan, team, or desktop history. Archive it to preserve its records."), 409
     label = challenge.qr_id
     audit("QR_PERMANENTLY_DELETED", label)
@@ -162,6 +169,9 @@ def manage_qr(qr_pk, action):
         return jsonify(error="QR not found."), 404
     from models import Desktop
     desktop = Desktop.query.filter_by(qr_id=challenge.id).first()
+    offline = offline_qr_config(challenge.id)
+    if offline and offline.started_at and action == "regenerate":
+        return jsonify(error="Do not regenerate Round 3 QRs after the team enters the round."), 409
     if desktop and action == "regenerate":
         from models import DesktopSession
         if DesktopSession.query.filter_by(desktop_id=desktop.id, completed_at=None).first():
@@ -394,7 +404,7 @@ def edit_qr(qr_pk):
         if not event_round:
             return jsonify(error="Select a valid round."), 400
     from models import Desktop
-    linked = (Team.query.filter_by(assigned_qr_id=challenge.id).first()
+    linked = (offline_qr_config(challenge.id) or Team.query.filter_by(assigned_qr_id=challenge.id).first()
               or Desktop.query.filter_by(qr_id=challenge.id).first())
     def changed_id(key, current):
         if key not in data:
@@ -403,6 +413,11 @@ def edit_qr(qr_pk):
         value = None if raw in (None, "") else int(raw)
         return value != current
 
+    offline = offline_qr_config(challenge.id)
+    if offline and offline.started_at and {"clue", "room", "title", "question_id", "quiz_id", "round_id", "qr_id"}.intersection(data):
+        return jsonify(error="Round 3 configuration cannot change after the team enters the round."), 409
+    if not offline and event_round.number == 3:
+        return jsonify(error="Configure Round 3 password QRs in Event Operations."), 400
     identity_changed = (
         ("qr_id" in data and str(data["qr_id"]).strip() != challenge.qr_id)
         or changed_id("round_id", challenge.round_id)
@@ -410,7 +425,7 @@ def edit_qr(qr_pk):
         or changed_id("quiz_id", challenge.quiz_id)
     )
     if linked and identity_changed:
-        return jsonify(error="Round, QR number, question, and quiz cannot change while assigned to a team or desktop."), 409
+        return jsonify(error="Round, QR number, question, and quiz cannot change while assigned to a team."), 409
     if "qr_id" in data:
         label = str(data["qr_id"]).strip()
         if not label or len(label) > 30 or not all(c.isalnum() or c == "-" for c in label):
@@ -488,3 +503,7 @@ def validate_question(question, number):
             valid = False
         if not valid:
             raise EventError("Numerical questions require a finite numeric key.", 400)
+
+
+def offline_qr_config(qr_id):
+    return OfflineRound3.query.filter_by(password_qr_id=qr_id).first()

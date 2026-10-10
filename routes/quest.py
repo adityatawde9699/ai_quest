@@ -1,17 +1,16 @@
 """Participant challenge routes; all progress is derived from committed records."""
 from datetime import timezone
 
-from flask import Blueprint, jsonify, request, render_template
+from flask import Blueprint, jsonify, request
 from flask_login import current_user
 
 from extensions import db
-from models import (Answer, Desktop, DesktopSession, FinalAnswer, QRChallenge, QRScanEvent,
-                    QuizAttempt, ScanLog, Round, RoundSession, utcnow)
+from models import (Answer, QRChallenge, QRScanEvent, QuizAttempt, ScanLog,
+                    Round, OfflineRound3, utcnow)
 from routes.common import audit, emit_activity, iso_utc, team_required
-from services.event import (EventError, active_round, event_config, final_assignment,
-                            finish_round, password_attempt, public_questions,
-                            require_session, set_score, snapshot, start_round,
-                            automatic_points)
+from services.event import (EventError, active_round, event_config,
+                            finish_round, public_questions,
+                            require_session, set_score, snapshot, start_round)
 
 quest_bp = Blueprint("quest", __name__)
 
@@ -63,8 +62,11 @@ def scan_qr():
                 active_round(3)
                 if team.state not in ("ROUND_2_COMPLETED", "ROUND_3_ACTIVE", "PASSWORD_CHALLENGE", "FINAL_CHALLENGE"):
                     raise EventError("Complete Round 2 first.")
-                if not Desktop.query.filter_by(qr_id=challenge.id, active=True).first():
-                    raise EventError("This desktop is not available.")
+                config = OfflineRound3.query.filter_by(team_id=team.id).first()
+                if not config or challenge.id != config.password_qr_id:
+                    raise EventError("Scan your team's assigned Round 3 password QR.")
+                if config.sheet_received_at:
+                    raise EventError("Your team already has its question sheet.")
         except EventError as error:
             status, message = "WRONG_ROUND", error.message
     record_scan(challenge, team, status)
@@ -77,7 +79,13 @@ def scan_qr():
         if number == 2:
             begin_quiz(team, challenge)
         elif number == 3:
-            released_batch = attach_desktop(team, Desktop.query.filter_by(qr_id=challenge.id, active=True).one())
+            config = OfflineRound3.query.filter_by(team_id=team.id).one()
+            start_round(team, 3)
+            team.state = "ROUND_3_ACTIVE"
+            if not config.started_at:
+                config.started_at = utcnow()
+                from services.batches import on_round_3_entry
+                released_batch = on_round_3_entry(team)
     except EventError as error:
         db.session.rollback()
         from sqlalchemy import update
@@ -179,126 +187,66 @@ def submit_quiz():
     return jsonify(message="Quiz submitted successfully. Your responses have been recorded. Results will be announced later.", destination=event_config().round_3_destination)
 
 
-def attach_desktop(team, desktop):
-    existing = DesktopSession.query.filter_by(team_id=team.id).first()
-    if existing:
-        if existing.desktop_id != desktop.id:
-            raise EventError("Your team is already assigned to another desktop.")
-        return existing
-    if DesktopSession.query.filter_by(desktop_id=desktop.id, completed_at=None).first():
-        raise EventError("This desktop is occupied. Contact the coordinator.")
-    start_round(team, 3)
-    session = DesktopSession(team_id=team.id, desktop_id=desktop.id)
-    db.session.add(session)
-    team.state = "PASSWORD_CHALLENGE"
-    audit("DESKTOP_ASSIGNED", team.team_id, {"desktop": desktop.name})
-    db.session.flush()
-    from services.batches import on_round_3_entry
-    return on_round_3_entry(team)
 
-
-@quest_bp.get("/desktop/<int:desktop_id>")
+@quest_bp.get("/api/team/round3")
 @team_required
-def desktop_page(desktop_id):
-    session = DesktopSession.query.filter_by(team_id=current_user.id, desktop_id=desktop_id).first()
-    if not session:
-        raise EventError("Scan the station QR using your team login first.", 403)
-    return render_template("desktop.html", desktop=session.desktop)
+def round3_status():
+    from services.offline_round3 import participant_status
+    return jsonify(participant_status(current_user))
 
 
-@quest_bp.get("/api/team/desktop")
+@quest_bp.post("/api/team/round3/password")
 @team_required
-def desktop_status():
-    session = DesktopSession.query.filter_by(team_id=current_user.id).first()
-    if not session:
-        raise EventError("Scan the QR at your desktop station first.")
-    return jsonify(desktop_id=session.desktop_id, name=session.desktop.name,
-                   attempts_remaining=3-session.password_attempts,
-                   unlocked=session.final_challenge_unlocked, completed=bool(session.completed_at))
-
-
-@quest_bp.post("/api/team/desktop/password")
-@team_required
-def submit_password():
+def round3_password():
+    from werkzeug.security import check_password_hash
+    from services.offline_round3 import participant_status
+    require_session(current_user, 3)
+    config = OfflineRound3.query.filter_by(team_id=current_user.id).first()
+    if not config or not ScanLog.query.filter_by(team_id=current_user.id, qr_id=config.password_qr_id).first():
+        raise EventError("Scan your password QR first.")
+    qr = config.password_qr
+    if qr.status != "ACTIVE" or (qr.expires_at and utcnow() > qr.expires_at.replace(tzinfo=timezone.utc)):
+        raise EventError("The password QR is inactive or expired. Contact the coordinator.")
+    if config.sheet_received_at or config.password_solved:
+        raise EventError("Password path complete. Ask the organizer for your sheet.")
+    if config.password_attempts >= 3:
+        raise EventError("No password attempts remain. Contact the organizer.")
     value = str((request.get_json(silent=True) or {}).get("password", ""))
     if not value or len(value) > 300:
         raise EventError("Enter a password of 1–300 characters.", 400)
-    session = password_attempt(current_user, value)
+    config.password_attempts += 1
+    config.password_solved = check_password_hash(config.password_hash, value)
+    audit("OFFLINE_PASSWORD_ATTEMPT", current_user.team_id,
+          {"number": config.password_attempts, "correct": config.password_solved})
     db.session.commit()
-    emit_activity(f"{current_user.team_id} password attempt #{session.password_attempts}", "password")
-    return jsonify(attempts_remaining=3-session.password_attempts, unlocked=session.final_challenge_unlocked,
-                   message="Password accepted. Final Challenge unlocked." if session.password_solved else "Password challenge failed. Final Challenge unlocked." if session.final_challenge_unlocked else "Incorrect password.")
+    return jsonify(**participant_status(current_user), message=
+                   "Password accepted. Show this confirmation to the organizer to collect your question sheet."
+                   if config.password_solved else "Incorrect password. Please try again if attempts remain.")
 
 
-@quest_bp.get("/api/team/final")
+@quest_bp.post("/api/team/round3/complete")
 @team_required
-def get_final():
-    assignment = final_assignment(current_user)
-    answers = FinalAnswer.query.filter_by(assignment_id=assignment.id).all()
-    return jsonify(questions=public_questions(assignment.questions), submitted_at=iso_utc(assignment.submitted_at),
-                   answers={str(a.question_id): a.answer for a in answers})
-
-
-@quest_bp.put("/api/team/final/answers/<int:question_id>")
-@team_required
-def save_final_answer(question_id):
+def complete_offline_round3():
     require_session(current_user, 3)
-    assignment = final_assignment(current_user)
-    if assignment.submitted_at:
-        raise EventError("Final challenge already submitted.")
-    if question_id not in [q["id"] for q in assignment.questions]:
-        raise EventError("Question not assigned to your team.", 404)
-    value = str((request.get_json(silent=True) or {}).get("answer", "")).strip()
-    if not value or len(value) > 4000:
-        raise EventError("Enter an answer of 1–4,000 characters.", 400)
-    answer = FinalAnswer.query.filter_by(assignment_id=assignment.id, question_id=question_id).first()
-    if not answer:
-        answer = FinalAnswer(assignment_id=assignment.id, question_id=question_id)
-        db.session.add(answer)
-    answer.answer, answer.timestamp = value, utcnow()
-    audit("FINAL_QUESTION_ANSWERED", current_user.team_id, {"question_id": question_id})
-    db.session.commit()
-    return jsonify(saved=True)
-
-
-@quest_bp.post("/api/team/final/submit")
-@team_required
-def submit_final():
-    require_session(current_user, 3)
-    assignment = final_assignment(current_user)
-    if assignment.submitted_at:
-        raise EventError("Final challenge already submitted.")
-    answers = {a.question_id: a for a in FinalAnswer.query.filter_by(assignment_id=assignment.id)}
-    if any(q["id"] not in answers for q in assignment.questions):
-        raise EventError("Answer all assigned questions before submitting.", 400)
-    for q in assignment.questions:
-        answers[q["id"]].points = automatic_points(q, answers[q["id"]].answer)
-    assignment.submitted_at = utcnow()
-    assignment.reviewed = all(a.points is not None for a in answers.values())
-    set_score(current_user.id, require_session(current_user, 3).round_id, sum(a.points or 0 for a in answers.values()))
-    DesktopSession.query.filter_by(team_id=current_user.id).one().completed_at = utcnow()
+    config = OfflineRound3.query.filter_by(team_id=current_user.id).first()
+    if not config or not config.password_solved:
+        raise EventError("Solve your Round 3 password riddle before completing the round.")
     finish_round(current_user, 3)
     from services.batches import mark_completed
     mark_completed(current_user)
-    audit("FINAL_SUBMITTED", current_user.team_id)
+    audit("TEAM_OFFLINE_ROUND3_COMPLETED", current_user.team_id)
     db.session.commit()
-    emit_activity(f"{current_user.team_id} completed final challenge", "final")
-    return jsonify(message="Submission confirmed. Your answers have been recorded. Results will be announced later.")
+    emit_activity(f"{current_user.team_id} completed Round 3; finish time recorded", "round")
+    return jsonify(message="Quest complete. Your finish time is saved. Return your answer sheet to the organizer for evaluation.")
 
 
+@quest_bp.get("/desktop/<int:desktop_id>")
 @quest_bp.get("/station/<int:desktop_id>")
-def station_screen(desktop_id):
-    desktop = db.get_or_404(Desktop, desktop_id)
-    if not desktop.active:
-        raise EventError("This station is not active.")
-    return render_template("station.html", desktop=desktop)
-
-
 @quest_bp.get("/station/<int:desktop_id>/qr.png")
-def station_qr(desktop_id):
-    from flask import send_file
-    from utils.qr_generator import render_qr, scan_url
-    desktop = db.get_or_404(Desktop, desktop_id)
-    if not desktop.active:
-        raise EventError("This station is not active.")
-    return send_file(render_qr(scan_url(desktop.qr.secure_token)), mimetype="image/png")
+@quest_bp.get("/api/team/desktop")
+@quest_bp.post("/api/team/desktop/password")
+@quest_bp.get("/api/team/final")
+@quest_bp.put("/api/team/final/answers/<int:question_id>")
+@quest_bp.post("/api/team/final/submit")
+def retired_round3(**kwargs):
+    raise EventError("Round 3 uses offline question sheets. Open your team dashboard.", 410)

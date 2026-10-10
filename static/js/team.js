@@ -3,7 +3,7 @@
   const $ = id => document.getElementById(id);
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const liveCameraAvailable = !!(window.isSecureContext && navigator.mediaDevices?.getUserMedia);
-  let summary, cameraControls, cameraReader, cameraStarting=false, scanHandled=false;
+  let summary, summaryReceivedAt=Date.now(), cameraControls, cameraReader, cameraStarting=false, scanHandled=false;
   const toast = (message,error=false) => {const node=document.createElement('div');node.className=`toast${error?' error':''}`;node.textContent=message;$('toast-root').append(node);setTimeout(()=>node.remove(),6000);};
   async function api(path,options={}) {
     const response=await fetch(path,{credentials:'same-origin',...options,headers:{'Content-Type':'application/json','X-CSRFToken':csrf}});
@@ -15,7 +15,7 @@
       const [dashboard, rounds, rows] = await Promise.all([
         api('/api/team/dashboard'), api('/api/team/rounds'), api('/api/leaderboard')
       ]);
-      summary=dashboard;
+      summary=dashboard;summaryReceivedAt=Date.now();renderElapsed();
       $('team-name').textContent=summary.team.team_name;
       $('team-id').textContent=summary.team.team_id;
       $('team-batch').textContent=summary.team.batch_number?`Batch ${summary.team.batch_number} · ${summary.team.batch_status.replaceAll('_',' ').toLowerCase()}`:'Batch assignment pending';
@@ -29,7 +29,7 @@
       const active=summary.round_status==='ACTIVE';
       const batchReady=['RELEASED','IN_PROGRESS'].includes(summary.team.batch_status);
       $('start-round').hidden=!(active&&batchReady&&summary.round_number===1&&!summary.session_active);
-      const canScan=active && ['ROUND_1_ACTIVE','ROUND_1_COMPLETED','ROUND_2_COMPLETED'].includes(summary.team.state);
+      const canScan=active && ['ROUND_1_ACTIVE','ROUND_1_COMPLETED','ROUND_2_COMPLETED','ROUND_3_ACTIVE'].includes(summary.team.state) && !summary.round3?.sheet_received_at;
       $('scan-open').hidden=!canScan;
       $('scan-open').textContent=liveCameraAvailable?'▦ Scan QR':'▦ Take QR photo';
       $('scan-photo').hidden=!canScan||!liveCameraAvailable;
@@ -37,9 +37,17 @@
       $('scan-fallback').hidden=!canScan;
       $('manual-scan').hidden=!active;
       $('quiz-next').hidden=!['ROUND_2_ACTIVE','ROUND_2_COMPLETED'].includes(summary.team.state);
-      $('desktop-open').hidden=!summary.desktop_id;
-      $('desktop-open').href=summary.desktop_id?`/desktop/${summary.desktop_id}`:'#';
-      const instructions={REGISTERED:['Ready for your first clue?','Start Round 1, then scan the QR matching the number on your envelope.'],ROUND_1_ACTIVE:['Find your assigned QR.','Scan the QR matching the number on your envelope to reveal your clue.'],ROUND_1_COMPLETED:['Follow the clue.','Solve the clue and scan the destination QR to open your ten-question quiz.'],ROUND_2_ACTIVE:['Your quiz is ready.','Open the quiz to continue. Answers save as you select them. Results are announced later.'],ROUND_2_COMPLETED:['Head to the desktop station.','Follow the coordinator’s instructions and scan your desktop QR.'],PASSWORD_CHALLENGE:['Solve the password clue.','Continue on your assigned desktop. Your attempt count is saved.'],FINAL_CHALLENGE:['Finish the final challenge.','Continue on your assigned desktop. Your questions and answers are saved.'],COMPLETED:['Quest complete.','Your submissions have been recorded. Results will be announced after judging.'],DISQUALIFIED:['Contact your coordinator.','Your team is unable to continue. Please speak to an event coordinator.']};
+      const r3=summary.round3;
+      $('round3-box').hidden=!(r3?.configured && ['ROUND_2_COMPLETED','ROUND_3_ACTIVE','COMPLETED'].includes(summary.team.state));
+      $('round3-completion').hidden=!(active&&r3?.password_solved&&!r3.completed_at&&summary.team.state==='ROUND_3_ACTIVE');
+      if(r3?.configured){
+        $('password-clue').hidden=!r3.password_clue;
+        $('password-clue').textContent=`Password riddle: ${r3.password_clue||''}`;
+        $('round3-password-form').hidden=!(active && r3.password_clue && !r3.password_solved && r3.attempts_remaining>0 && !r3.sheet_received_at && !r3.submitted_at);
+        $('round3-attempts').textContent=`Password attempts remaining: ${r3.attempts_remaining}`;
+        $('round3-status').textContent=r3.submitted_at?'Your paper submission is recorded. Results will be announced after judging.':r3.completed_at?'Quest complete. Your finish time is saved. The organizer will confirm your returned sheet and evaluate it.':r3.sheet_received_at?'Sheet collection confirmed. Answer on paper and return it to the organizer.':r3.password_solved?'Password accepted. Show this confirmation to the organizer to collect your question sheet.':r3.attempts_remaining===0?'No password attempts remain. Contact the organizer.':'Scan your Round 3 password QR, solve the riddle, and enter its answer here.';
+      }
+      const instructions={REGISTERED:['Ready for your first clue?','Start Round 1, then scan the QR matching the number on your envelope.'],ROUND_1_ACTIVE:['Find your assigned QR.','Scan the QR matching the number on your envelope to reveal your clue.'],ROUND_1_COMPLETED:['Follow the clue.','Solve the clue and scan the destination QR to open your ten-question quiz.'],ROUND_2_ACTIVE:['Your quiz is ready.','Open the quiz to continue. Answers save as you select them. Results are announced later.'],ROUND_2_COMPLETED:['Solve your Round 3 password riddle.','Scan your assigned password riddle QR.'],ROUND_3_ACTIVE:['Solve a riddle and get your sheet.','Enter the password here, then collect your sheet from the organizer. Answer on paper and return it to the organizer.'],COMPLETED:['Quest complete.','Your submissions have been recorded. Results will be announced after judging.'],DISQUALIFIED:['Contact your coordinator.','Your team is unable to continue. Please speak to an event coordinator.']};
       const [heading,copy]=instructions[summary.team.state]||[summary.current_round,'Follow the coordinator’s instructions.'];
       $('action-heading').textContent=heading;
       $('action-copy').textContent=summary.round_number===1&&!summary.session_active&&summary.team.batch_status==='PAUSED'?'Your batch is paused. Please wait for the coordinator to resume it.':summary.round_number===1&&!summary.session_active&&!batchReady?'Your batch is waiting for release. Please wait for the coordinator.':summary.round_status==='PAUSED'?'This round is paused. Your progress is saved. Wait for the coordinator to resume it.':copy;
@@ -129,14 +137,26 @@
   }
   async function openQuiz(){try{await renderChallenge('quiz',$('quiz-box'));}catch(e){toast(e.message,true);}}
   if($('quiz-next'))$('quiz-next').onclick=openQuiz;
-  if(document.body.dataset.desktop){
-    async function desktopRefresh(){try{const state=await api('/api/team/desktop');$('attempts').textContent=`Attempts remaining: ${state.attempts_remaining}`;$('password-form').hidden=state.unlocked;if(state.unlocked)await renderChallenge('final',$('quiz-box'));}catch(e){toast(e.message,true);}}
-    $('password-form').onsubmit=async e=>{e.preventDefault();const button=e.currentTarget.querySelector('button');button.disabled=true;try{const response=await api('/api/team/desktop/password',{method:'POST',body:JSON.stringify({password:$('password').value})});$('password').value='';$('desktop-message').textContent=response.message;await desktopRefresh();}catch(e){toast(e.message,true);}finally{button.disabled=false;}};
-    desktopRefresh();
-  }else{
+  function renderElapsed(){
+    if(!summary)return;
+    const seconds=Math.max(0,(summary.elapsed_seconds||0)+(summary.session_active?Math.floor((Date.now()-summaryReceivedAt)/1000):0));
+    $('team-elapsed').textContent=[Math.floor(seconds/3600),Math.floor(seconds/60)%60,seconds%60].map(n=>String(n).padStart(2,'0')).join(':');
+  }
+  if($('complete-round3'))$('complete-round3').onclick=async()=>{
+    if(!confirm('Have you finished your paper answers and returned the sheet? Complete Round 3 now to save your final time. This cannot be undone.'))return;
+    const button=$('complete-round3');button.disabled=true;
+    try{const result=await api('/api/team/round3/complete',{method:'POST',body:'{}'});toast(result.message);await refresh();}
+    catch(error){toast(error.message,true);}finally{button.disabled=false;}
+  };
+  if($('round3-password-form'))$('round3-password-form').onsubmit=async e=>{
+    e.preventDefault();const button=e.currentTarget.querySelector('button');button.disabled=true;
+    try{const result=await api('/api/team/round3/password',{method:'POST',body:JSON.stringify({password:$('round3-password').value})});$('round3-password').value='';toast(result.message,!result.password_solved);await refresh();}
+    catch(error){toast(error.message,true);}finally{button.disabled=false;}
+  };
+  {
     const scan=new URLSearchParams(location.search).get('scan');
     if(scan){$('scan-fallback').open=true;refresh().then(()=>submitToken(scan));history.replaceState({},'',location.pathname);}
     else refresh();
-    setInterval(refresh,20000);setInterval(()=>{if(summary)$('team-elapsed').textContent=summary.round_started_at?new Date(Math.max(0,Date.now()-new Date(summary.round_started_at))).toISOString().slice(11,19):'—';},1000);
+    setInterval(refresh,20000);setInterval(renderElapsed,1000);
   }
 })();

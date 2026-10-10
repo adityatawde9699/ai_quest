@@ -12,7 +12,7 @@ If rounds from an earlier rehearsal show as ended in a TEST database, a super-ad
 
 ## Automatic release
 
-The first successful Round 3 desktop attachment in a batch releases the next waiting batch with eligible teams in the same transaction. Other teams in the earlier batch continue independently. Later Round 3 entries do not release another batch. An empty next batch stays waiting and is released when its first eligible team is assigned after the predecessor has triggered.
+The first successful scan of the assigned Round 3 password QR in a batch releases the next waiting batch with eligible teams in the same transaction. Other teams in the earlier batch continue independently. Later Round 3 entries do not release another batch. An empty next batch stays waiting and is released when its first eligible team is assigned after the predecessor has triggered.
 
 Batch states are `WAITING`, `RELEASED`, `IN_PROGRESS`, `PAUSED`, and `COMPLETED`. The `PAUSED` state blocks new Round 1 starts; teams already in a round can finish it. A batch is completed when all its assigned teams are completed, disabled, or disqualified. Disabled and disqualified teams cannot log in and do not count toward active capacity. Re-enabling one in a full batch requires a super-admin `batch_override: true` on the team edit API and creates an audit entry. A team that has started a round cannot be reassigned.
 
@@ -24,7 +24,7 @@ Administrators can open a team directly from its batch card to edit member detai
 
 If a released batch has no team able to reach Round 3, a super-admin must release the next batch manually. A waiting batch with no eligible teams stays waiting until an eligible team is assigned.
 
-For a rehearsal, use a separate TEST database with at least six teams. Confirm that team 6 cannot start Round 1, then take a team from Batch 1 through the desktop QR and confirm that team 6 can start. Repeat with two Round 3 entries close together to verify that only one `BATCH_RELEASED` audit entry is recorded.
+For a rehearsal, use a separate TEST database with at least six teams. Confirm that team 6 cannot start Round 1, then take a team from Batch 1 through the assigned Round 3 QR and confirm that team 6 can start. Repeat with two Round 3 entries close together to verify that only one `BATCH_RELEASED` audit entry is recorded.
 
 The isolated load simulation also runs rolling waves: `venv/bin/python scripts/simulate_event.py --teams 6 10`. It creates a temporary database, verifies all batches finish, and leaves event data untouched.
 

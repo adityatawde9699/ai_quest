@@ -1,13 +1,8 @@
 """Shared state guards and persistent challenge assignment/scoring."""
-import secrets
 from decimal import Decimal, InvalidOperation
 
-from flask import abort
-from werkzeug.security import check_password_hash
-
 from extensions import db
-from models import (Answer, DesktopSession, Event, FinalAnswer, FinalAssignment,
-                    Question, QuizAttempt, Round, RoundSession, Score, utcnow)
+from models import Event, Round, RoundSession, Score, utcnow
 from routes.common import audit
 
 
@@ -94,41 +89,6 @@ def snapshot(question):
 
 def public_questions(questions):
     return [{k: v for k, v in q.items() if k not in ("correct_answer", "points")} for q in questions]
-
-
-def password_attempt(team, password):
-    require_session(team, 3)
-    session = DesktopSession.query.filter_by(team_id=team.id).first()
-    if not session or not session.desktop.active:
-        raise EventError("An active desktop session is required.")
-    if session.final_challenge_unlocked or session.password_attempts >= 3:
-        raise EventError("Password challenge complete. Final Challenge unlocked.")
-    # Validate final bank before consuming an attempt; unlocking must be atomic.
-    bank = Question.query.join(Round).filter(Round.number == 3, Question.active.is_(True)).all()
-    count = event_config().final_question_count
-    if len(bank) < count:
-        raise EventError("Final challenge is not configured. Contact the coordinator.")
-    session.password_attempts += 1
-    correct = check_password_hash(session.desktop.password_hash, password)
-    from models import PasswordAttempt
-    db.session.add(PasswordAttempt(session_id=session.id, number=session.password_attempts, correct=correct))
-    audit("PASSWORD_ATTEMPT", team.team_id, {"number": session.password_attempts, "correct": correct})
-    if correct or session.password_attempts == 3:
-        session.password_solved = correct
-        session.final_challenge_unlocked = True
-        team.state = "FINAL_CHALLENGE"
-        chosen = secrets.SystemRandom().sample(bank, count)
-        db.session.add(FinalAssignment(team_id=team.id, questions=[snapshot(q) for q in chosen]))
-        audit("PASSWORD_SUCCESS" if correct else "PASSWORD_FAILED", team.team_id)
-        audit("FINAL_UNLOCKED", team.team_id)
-    return session
-
-
-def final_assignment(team):
-    assignment = FinalAssignment.query.filter_by(team_id=team.id).first()
-    if not assignment:
-        raise EventError("Complete the password challenge first.")
-    return assignment
 
 
 def automatic_points(question, answer):

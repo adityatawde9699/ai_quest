@@ -3,7 +3,7 @@
 ## Team progression
 
 REGISTERED → ROUND_1_ACTIVE → ROUND_1_COMPLETED → ROUND_2_ACTIVE →
-ROUND_2_COMPLETED → ROUND_3_ACTIVE → PASSWORD_CHALLENGE → FINAL_CHALLENGE → COMPLETED.
+ROUND_2_COMPLETED → ROUND_3_ACTIVE → COMPLETED.
 DISABLED/DISQUALIFIED blocks all participant actions. Global round states are LOCKED,
 READY, ACTIVE, PAUSED and ENDED. Ending a global round never awards individual completion.
 Several global rounds may be ACTIVE concurrently so teams can physically progress at
@@ -32,28 +32,31 @@ or score before publication. Multiple destination quizzes are supported.
 
 ## Round 3
 
-Staff open `/station/<id>` on each college desktop to display its QR. A logged-in team
-scans the QR on its phone, occupying that available station. The team then logs in on the
-desktop and opens its assigned desktop challenge from the team dashboard. A station serves
-one active team at a time, and a team has one fixed desktop session. Completed stations
-become available to another team. Overrides do not reset password attempts.
+Every team has one assigned password-riddle QR code, configured in Event Operations.
+Scanning it reveals a riddle on the team's phone. The team enters the answer as a password
+in its dashboard. A correct password qualifies the team to collect a question sheet from
+an organizer. There is no hidden-sheet location QR.
 
-The password is a **web application challenge**, not an operating-system account unlock.
-OS-level authentication cannot safely implement the rule that three failures unlock the
-final web challenge; organizers should keep the browser accessible in a station account.
-The attempt limit applies to the authenticated team across all browsers/devices, not to
-physical hardware attestation. A correct password **or three failures** unlocks the final.
+Only the assigned team can use its QR, and Round 2 must be complete. The first successful
+Round 3 scan starts its round session and triggers the next batch release, once per batch.
+The riddle remains visible on the dashboard after refresh; before scanning it stays hidden.
 
-The server assigns `final_question_count` questions (default ten) using secure random
-sampling and persists complete snapshots. Enough active bank questions must exist before
-consuming a password attempt. Assignment refresh cannot reroll questions. Uniqueness
-between all teams is not guaranteed; different sequences are expected but collisions are
-possible and fair. The bank should be materially larger than the assignment count.
+The password is hashed and checked server-side. Each team has exactly three attempts,
+persisted across devices and logins. Three failures do not qualify the team for a sheet;
+the team must contact the organizer. Attempts cannot be reset through administration.
+No desktop station, online questions, automatic grading, or final question bank is required.
 
-MCQ, true/false, numerical and code-output keys are graded exactly after trimming/case
-normalization; numerical grading compares finite decimals exactly. SHORT ANSWER, LOGICAL
-and AI/TECHNICAL responses need human marks. These assumptions are deliberately simple;
-use a manual audited score adjustment for organizer-approved exceptions.
+An admin confirms handing over the physical sheet only after the app verifies the correct
+password. After the team writes answers on paper and returns it, the admin records
+submission. Teams can tap Complete Round 3 after finishing their paper answers and
+returning the sheet. The app immediately saves the server finish time and stops the clock.
+Later admin paper receipt and human judging preserve that finish time. Admin submission
+can still record completion if the team has not tapped the button.
+
+A judge enters total paper marks within the configured maximum and a judging note.
+Corrections are audited. Results cannot be generated until every eligible team's paper
+has been evaluated, and result locks prevent mark changes. Participants see confirmation
+and submission status; marks remain hidden until publication.
 
 ## Scoring/results
 

@@ -3,7 +3,7 @@ from datetime import timedelta
 
 from app import create_app
 from extensions import db
-from models import (Event, Answer, Admin, FinalResult, QRChallenge, QRScanEvent,
+from models import (OfflineRound3, Event, Answer, Admin, FinalResult, QRChallenge, QRScanEvent,
                     Round, RoundSession, Score, Team, TeamMember, utcnow)
 from utils.scoring import leaderboard_rows
 
@@ -68,18 +68,39 @@ class EventAppTests(unittest.TestCase):
                                                        'expires_at': expiry})
         self.assertEqual(round_two.status_code, 201, round_two.get_json())
         self.assertEqual(round_two.get_json()['qr']['quiz_id'], quiz_id)
-        round_three = self.client.post('/api/qrs', json={'round_id': 3, 'title': 'Final Challenge',
-                                                         'clue': 'Find the password', 'expires_at': expiry})
-        self.assertEqual(round_three.status_code, 201, round_three.get_json())
-        self.assertIsNone(round_three.get_json()['qr']['quiz_id'])
-        desktop = self.client.post('/api/admin/desktops', json={'name': 'Station A',
-                                                                 'password': 'desktop-password',
-                                                                 'clue': 'Unlock the final challenge',
-                                                                 'qr_id': round_three.get_json()['qr']['id']})
-        self.assertEqual(desktop.status_code, 201, desktop.get_json())
-        self.assertEqual(desktop.get_json()['qr_id'], round_three.get_json()['qr']['id'])
+        self.assertEqual(self.client.post('/api/qrs', json={'round_id':3, 'clue':'Password'}).status_code,400)
+        team = self.create_team()['team']
+        pair = self.client.post('/api/admin/round3',json={'team_id':team['id'], 'password_clue':'Solve me',
+                                                       'password':'secret', 'room':'Library'})
+        self.assertEqual(pair.status_code,201,pair.get_json())
+        self.assertNotIn('location_qr_id',pair.get_json())
         self.assertEqual(self.client.delete(f'/api/admin/quizzes/{quiz_id}').status_code, 409)
         self.assertEqual(self.client.post('/api/qrs', json={'round_id': 2, 'title': 'Missing set'}).status_code, 400)
+
+    def test_round3_qr_creation_assigns_team_and_preserves_qr_options(self):
+        self.login_admin()
+        team=self.create_team()['team']
+        response=self.client.post('/api/qrs',json={
+            'round_id':3,'team_id':team['id'],'title':'Team password riddle',
+            'clue':'The answer to life','password':'forty-two','max_points':75,
+            'room':'Library','qr_number':'R3-TEAM-ONE','expires_at':'2030-01-01T12:00:00Z'})
+        self.assertEqual(response.status_code,201,response.get_json())
+        qr=response.get_json()['qr']
+        self.assertEqual(qr['round'],3)
+        self.assertEqual(qr['qr_id'],'R3-TEAM-ONE')
+        self.assertEqual(qr['clue'],'The answer to life')
+        self.assertTrue(qr['expires_at'].startswith('2030-01-01'))
+        self.assertEqual(qr['status'],'INACTIVE')
+        with self.app.app_context():
+            config=OfflineRound3.query.one()
+            self.assertEqual(config.team_id,team['id'])
+            self.assertEqual(config.password_qr_id,qr['id'])
+            self.assertEqual(config.max_points,75)
+            from werkzeug.security import check_password_hash
+            self.assertTrue(check_password_hash(config.password_hash,'forty-two'))
+        duplicate=self.client.post('/api/qrs',json={'round_id':3,'team_id':team['id'],'clue':'Riddle','password':'secret'})
+        self.assertEqual(duplicate.status_code,409)
+        with self.app.app_context():self.assertEqual(QRChallenge.query.filter_by(round_id=3).count(),1)
 
     def create_team(self):
         response = self.client.post("/api/teams", json={"team_name": "Test Team", "member_1": "Alex"})
@@ -129,6 +150,11 @@ class EventAppTests(unittest.TestCase):
                 event_round.status = "ENDED"
             durations = [(120, 120), (60, 120), (60, 90)]
             for team, (duration, completion) in zip(teams, durations):
+                qrs = [QRChallenge(qr_id=f'{team.team_id}-P', secure_token=f'{team.team_id}-P', round_id=3)]
+                db.session.add_all(qrs);db.session.flush()
+                config=OfflineRound3(team_id=team.id,password_qr_id=qrs[0].id,
+                                     submitted_at=started_at,reviewed_at=started_at,points=10)
+                config.set_password('secret');db.session.add(config)
                 db.session.add(Score(team_id=team.id, round_id=1, points=50))
                 db.session.add(Score(team_id=team.id, round_id=3, points=10))
                 for round_number in (1, 2, 3):

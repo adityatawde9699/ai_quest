@@ -5,7 +5,7 @@ from zipfile import ZipFile
 from flask import Blueprint, current_app, jsonify, request, Response, send_file, render_template
 from flask_login import current_user
 from extensions import db
-from models import (ActivityLog, Admin, Answer, Batch, Desktop, DesktopSession, FinalAnswer,
+from models import (OfflineRound3, ActivityLog, Admin, Answer, Batch, Desktop, DesktopSession, FinalAnswer,
                     FinalAssignment, FinalResult, PasswordAttempt, QRChallenge, QRScanEvent,
                     Question, Quiz, QuizAttempt, QuizQuestion, Round, RoundSession, ScanLog,
                     Score, Team, TeamMember, utcnow)
@@ -55,9 +55,7 @@ def event_settings():
                     raise EventError("Use a boolean value.", 400)
                 setattr(event, key, values[key])
         if "final_question_count" in values:
-            if FinalAssignment.query.first():
-                raise EventError("Question count cannot change after assignments exist.")
-            event.final_question_count = integer(values["final_question_count"], 1, 100)
+            raise EventError("Round 3 questions are provided on paper; online question count is retired.", 400)
         if "round_1_points" in values:
             if ScanLog.query.first():
                 raise EventError("Round 1 marks cannot change after scans exist.")
@@ -67,7 +65,7 @@ def event_settings():
         audit("ADMIN_ACTION", "Event configuration", {"fields": list(values)})
         db.session.commit()
     return jsonify(name=event.name, mode=event.mode, active=event.active,
-                   final_question_count=event.final_question_count, round_1_points=event.round_1_points,
+                   round_1_points=event.round_1_points,
                    round_3_destination=event.round_3_destination, results_locked=event.results_locked,
                    results_published=event.results_published, leaderboard_visible=event.leaderboard_visible)
 
@@ -133,105 +131,149 @@ def edit_quiz(quiz_id):
     return jsonify(ok=True)
 
 
-@operations_bp.route("/api/admin/desktops", methods=["GET", "POST"])
+def create_round3_config(values, qr=None):
+    unlocked()
+    team = db.get_or_404(Team, integer(values.get("team_id"), 1))
+    if team.status in ("DISABLED", "DISQUALIFIED", "COMPLETED"):
+        raise EventError("Select an eligible team.")
+    if OfflineRound3.query.filter_by(team_id=team.id).first():
+        raise EventError("This team already has its Round 3 password QR. Edit it below.")
+    password = str(values.get("password", ""))
+    password_clue = str(values.get("password_clue", "")).strip()
+    room = str(values.get("room", "")).strip()
+    if not password or len(password) > 300 or not password_clue or len(password_clue) > 2000 or len(room) > 120:
+        raise EventError("Enter a password riddle, a password (up to 300 characters), and a room (up to 120 characters).", 400)
+    if qr is None:
+        row = Round.query.filter_by(number=3).one()
+        qr = QRChallenge(qr_id="R3-PASSWORD-"+new_qr_token()[:10], secure_token=new_qr_token(),
+                         round_id=row.id, title=f"{team.team_id} · Password riddle",
+                         clue=password_clue, room=room, status="INACTIVE")
+        db.session.add(qr)
+    db.session.flush()
+    config = OfflineRound3(team_id=team.id, password_qr_id=qr.id,
+                           max_points=integer(values.get("max_points", 100)))
+    config.set_password(password)
+    db.session.add(config)
+    audit("OFFLINE_ROUND3_CONFIGURED", team.team_id)
+    db.session.flush()
+    return config
+
+
+@operations_bp.route("/api/admin/round3", methods=["GET", "POST"])
 @admin_required
-def desktops():
+def offline_round3():
     if request.method == "POST":
-        values = data()
-        name, password, clue = str(values.get("name", "")).strip(), str(values.get("password", "")), str(values.get("clue", "")).strip()
-        if not name or len(name)>80 or not password or len(password)>300 or not clue or len(clue)>2000:
-            raise EventError("Enter a station name, riddle, and password within the field limits.", 400)
-        if Desktop.query.filter_by(name=name).first():
-            raise EventError("Desktop name already exists.")
-        qr = None
-        if values.get("qr_id"):
-            qr = db.session.get(QRChallenge, integer(values["qr_id"], 1))
-            if not qr or qr.round.number != 3 or qr.status == "ARCHIVED" or Desktop.query.filter_by(qr_id=qr.id).first():
-                raise EventError("Select an available Round 3 QR.", 400)
-            if qr.scans:
-                raise EventError("A scanned QR cannot be assigned to a new desktop.")
-            qr.room = name
-            qr.status = "ACTIVE"
-        else:
-            qr = QRChallenge(qr_id="DESKTOP-"+new_qr_token()[:12], secure_token=new_qr_token(),
-                             round_id=Round.query.filter_by(number=3).one().id,
-                             title=name, clue=clue, room=name, status="ACTIVE")
-            db.session.add(qr)
-        db.session.flush()
-        desktop = Desktop(name=name, qr_id=qr.id)
-        desktop.set_password(password)
-        db.session.add(desktop)
-        audit("DESKTOP_CREATED", name)
+        config = create_round3_config(data())
         db.session.commit()
-        return jsonify(id=desktop.id, qr_id=qr.id), 201
-    rows = []
-    for desktop in Desktop.query.order_by(Desktop.name):
-        session = DesktopSession.query.filter_by(desktop_id=desktop.id, completed_at=None).first()
-        rows.append({"id": desktop.id, "name": desktop.name, "active": desktop.active, "qr_id": desktop.qr_id,
-                     "clue": desktop.qr.clue, "team": session.team.team_id if session else None,
-                     "attempts": session.password_attempts if session else 0,
-                     "status": "Final Challenge" if session and session.final_challenge_unlocked else "Password Challenge" if session else "Available"})
-    return jsonify(rows)
+        return jsonify(id=config.id, password_qr_id=config.password_qr_id), 201
+    return jsonify([dict(id=c.id, team_id=c.team_id, team=c.team.team_id,
+                         password_qr_id=c.password_qr_id,
+                         password_qr=c.password_qr.qr_id,
+                         password_clue=c.password_qr.clue,
+                         room=c.password_qr.room, max_points=c.max_points,
+                         password_status=c.password_qr.status,
+                         password_attempts=c.password_attempts, password_solved=c.password_solved,
+                         started_at=iso_utc(c.started_at), sheet_path=c.sheet_path,
+                         completed_at=next((iso_utc(s.ended_at) for s in c.team.round_sessions if s.round.number == 3 and s.status == "COMPLETED"), None),
+                         sheet_received_at=iso_utc(c.sheet_received_at), submitted_at=iso_utc(c.submitted_at),
+                         reviewed_at=iso_utc(c.reviewed_at), points=c.points, judging_reason=c.judging_reason)
+                    for c in OfflineRound3.query.order_by(OfflineRound3.id)])
 
 
-@operations_bp.patch("/api/admin/desktops/<int:desktop_id>")
+@operations_bp.patch("/api/admin/round3/<int:config_id>")
 @admin_required
-def edit_desktop(desktop_id):
-    desktop = db.get_or_404(Desktop, desktop_id)
+def edit_offline_round3(config_id):
+    unlocked()
+    config = db.get_or_404(OfflineRound3, config_id)
+    if config.started_at or config.password_qr.scans:
+        raise EventError("Riddles, password, room, and maximum marks cannot change after Round 3 entry.")
     values = data()
-    if DesktopSession.query.filter_by(desktop_id=desktop_id, completed_at=None).first():
-        raise EventError("Do not modify an occupied desktop.")
-    if "active" in values:
-        if not isinstance(values["active"], bool):
-            raise EventError("Use a boolean value.", 400)
-        desktop.active = values["active"]
-        desktop.qr.status = "ACTIVE" if desktop.active else "INACTIVE"
+    for field, qr in (("password_clue", config.password_qr),):
+        if field in values:
+            value = str(values[field]).strip()
+            if not value or len(value) > 2000:
+                raise EventError("Enter a riddle of 1–2,000 characters.", 400)
+            qr.clue = value
     if "password" in values:
-        password = str(values["password"])
-        if not password or len(password)>300:
+        value = str(values["password"])
+        if not value or len(value) > 300:
             raise EventError("Enter a password of 1–300 characters.", 400)
-        desktop.set_password(password)
-    if "clue" in values:
-        desktop.qr.clue = str(values["clue"])[:2000]
-    audit("DESKTOP_UPDATED", desktop.name, {"fields": list(values)})
+        config.set_password(value)
+    if "room" in values:
+        room = str(values["room"]).strip()
+        if len(room) > 120:
+            raise EventError("Room must be 120 characters or fewer.", 400)
+        config.password_qr.room = room
+    if "max_points" in values:
+        config.max_points = integer(values["max_points"])
+    audit("OFFLINE_ROUND3_UPDATED", config.team.team_id, {"fields": list(values)})
     db.session.commit()
     return jsonify(ok=True)
 
 
-@operations_bp.get("/api/admin/assignments")
+@operations_bp.post("/api/admin/round3/<int:config_id>/<action>")
 @admin_required
-def assignments():
-    rows = []
-    for assignment in FinalAssignment.query.order_by(FinalAssignment.id):
-        answers = {a.question_id: a for a in FinalAnswer.query.filter_by(assignment_id=assignment.id)}
-        rows.append({"id": assignment.id, "team": db.session.get(Team,assignment.team_id).team_id,
-                     "submitted_at": iso_utc(assignment.submitted_at), "reviewed": assignment.reviewed,
-                     "questions": [{**q, "answer": answers[q["id"]].answer if q["id"] in answers else "",
-                                    "awarded": answers[q["id"]].points if q["id"] in answers else None} for q in assignment.questions]})
-    return jsonify(rows)
+def offline_round3_action(config_id, action):
+    from services.event import require_session, finish_round
+    unlocked()
+    config = db.get_or_404(OfflineRound3, config_id)
+    team, values = config.team, data()
+    if team.status in ("DISABLED", "DISQUALIFIED"):
+        raise EventError("This team is not eligible.")
+    if action in ("activate", "deactivate"):
+        if action == "activate" and config.password_qr.round.status not in ("READY", "ACTIVE"):
+            raise EventError("Open Round 3 before activating its QRs.")
+        for qr in (config.password_qr,):
+            qr.status = "ACTIVE" if action == "activate" else "INACTIVE"
+            if action == "activate":
+                qr.activated_at, qr.deactivated_at = utcnow(), None
+            else:
+                qr.deactivated_at = utcnow()
+    elif action == "sheet":
+        session = RoundSession.query.filter_by(team_id=team.id, round_id=config.password_qr.round_id).first()
+        if not session or session.status != "COMPLETED":
+            require_session(team, 3)
+        if config.sheet_received_at:
+            raise EventError("Sheet collection has already been recorded.")
+        if values.get("path", "PASSWORD") != "PASSWORD":
+            raise EventError("Sheets are handed out only after the correct password.", 400)
+        if not config.password_solved:
+            raise EventError("The team must solve the password before receiving a sheet.")
+        config.sheet_path, config.sheet_received_at = "PASSWORD", utcnow()
+    elif action == "submit":
+        if not config.sheet_received_at or config.submitted_at:
+            raise EventError("Record sheet collection first; submission can only be recorded once.")
+        config.submitted_at = utcnow()
+        session = RoundSession.query.filter_by(team_id=team.id, round_id=config.password_qr.round_id).first()
+        if not session or session.status != "COMPLETED":
+            finish_round(team, 3)
+        from services.batches import mark_completed
+        mark_completed(team)
+    elif action == "review":
+        if not config.submitted_at:
+            raise EventError("Collect the completed answer sheet before judging.")
+        reason = str(values.get("reason", "")).strip()
+        if not reason or len(reason) > 1000:
+            raise EventError("Enter a judging note of 1–1,000 characters.", 400)
+        points = integer(values.get("points"), 0, config.max_points)
+        audit("SCORE_UPDATED", team.team_id, {"round": 3, "before": config.points, "after": points, "reason": reason})
+        config.points, config.judging_reason, config.reviewed_at = points, reason, utcnow()
+        set_score(team.id, config.password_qr.round_id, points)
+    else:
+        raise EventError("Unknown Round 3 action.", 404)
+    audit("OFFLINE_ROUND3_"+action.upper(), team.team_id, {"path": config.sheet_path})
+    db.session.commit()
+    emit_activity(f"{team.team_id} Round 3: {action}", "round")
+    return jsonify(ok=True)
 
 
+@operations_bp.route("/api/admin/desktops", methods=["GET", "POST"])
+@operations_bp.patch("/api/admin/desktops/<int:desktop_id>")
+@operations_bp.get("/api/admin/assignments")
 @operations_bp.post("/api/admin/assignments/<int:assignment_id>/review")
 @admin_required
-def review_final(assignment_id):
-    unlocked()
-    assignment = db.get_or_404(FinalAssignment, assignment_id)
-    if not assignment.submitted_at:
-        raise EventError("Wait for final submission before judging.")
-    points = data().get("points", {})
-    answers = {a.question_id: a for a in FinalAnswer.query.filter_by(assignment_id=assignment.id)}
-    before = {str(pk): a.points for pk,a in answers.items()}
-    for q in assignment.questions:
-        if str(q["id"]) in points:
-            answers[q["id"]].points = integer(points[str(q["id"])],0,q["points"])
-        if answers[q["id"]].points is None:
-            raise EventError("Enter marks for every answer requiring review.",400)
-    assignment.reviewed = True
-    set_score(assignment.team_id,Round.query.filter_by(number=3).one().id,sum(a.points for a in answers.values()))
-    audit("SCORE_UPDATED",db.session.get(Team,assignment.team_id).team_id,
-          {"before":before,"after":{str(pk):a.points for pk,a in answers.items()}})
-    db.session.commit()
-    return jsonify(ok=True)
+def retired_desktops(**kwargs):
+    raise EventError("Use offline Round 3 configuration and sheet judging.", 410)
 
 
 @operations_bp.post("/api/admin/teams/<int:team_id>/score")
@@ -249,6 +291,8 @@ def manual_score(team_id):
         team.penalty = integer(values["penalty"])
     if "round_id" in values:
         row = db.get_or_404(Round,integer(values["round_id"],1))
+        if row.number == 3:
+            raise EventError("Enter Round 3 marks through offline sheet review.")
         set_score(team.id,row.id,integer(values.get("points")))
     audit("SCORE_UPDATED",team.team_id,{"reason":reason[:1000],"before":before,"after":{k:v for k,v in values.items() if k in ("round_id","points","bonus","penalty")}})
     db.session.commit()
@@ -329,6 +373,11 @@ def export_rows(kind):
         return [dict(team=a.team.team_id,question=a.question_id,selected=a.selected_answer,timestamp=iso_utc(a.answer_time),points=a.points) for a in Answer.query.order_by(Answer.id)]
     if kind=="quiz-results":
         return [dict(team=db.session.get(Team,a.team_id).team_id,quiz=a.quiz_id,submitted_at=iso_utc(a.submitted_at),score=a.score) for a in QuizAttempt.query.order_by(QuizAttempt.id)]
+    if kind=="round3-sheets":
+        return [dict(team=c.team.team_id, path=c.sheet_path, received_at=iso_utc(c.sheet_received_at),
+                     submitted_at=iso_utc(c.submitted_at), reviewed_at=iso_utc(c.reviewed_at),
+                     points=c.points, maximum=c.max_points, judging_reason=c.judging_reason)
+                for c in OfflineRound3.query.order_by(OfflineRound3.id)]
     if kind=="final-answers":
         return [dict(team=db.session.get(Team,db.session.get(FinalAssignment,a.assignment_id).team_id).team_id,question=a.question_id,answer=a.answer,timestamp=iso_utc(a.timestamp),points=a.points) for a in FinalAnswer.query.order_by(FinalAnswer.id)]
     if kind in ("scores","leaderboard"):
@@ -379,7 +428,7 @@ def reset_test():
         raise EventError("Reset is available only in a separate TEST database.",403)
     if event.active or event.results_locked or data().get("confirmation")!="RESET TEST PROGRESS":
         raise EventError("Stop the TEST event, unlock results, and type RESET TEST PROGRESS.")
-    for model in (PasswordAttempt,FinalAnswer,FinalAssignment,DesktopSession,QuizAttempt,Answer,ScanLog,
+    for model in (OfflineRound3,PasswordAttempt,FinalAnswer,FinalAssignment,DesktopSession,QuizAttempt,Answer,ScanLog,
                   QRScanEvent,FinalResult,Score,RoundSession,ActivityLog,TeamMember,Team,Batch):
         model.query.delete(synchronize_session=False)
     for row in Round.query:

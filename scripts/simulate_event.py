@@ -15,7 +15,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'tests'))
 from app import create_app
 from extensions import db
 from flask_migrate import upgrade
-from models import Batch, Desktop, Event, FinalAssignment, PasswordAttempt, QRChallenge, Score, Team, utcnow
+from models import OfflineRound3, Batch, Desktop, Event, FinalAssignment, PasswordAttempt, QRChallenge, Score, Team, utcnow
 from test_event_flow import seed_content
 
 
@@ -44,7 +44,8 @@ def simulate(count, database_url=None):
                 upgrade(directory=str(Path(__file__).resolve().parents[1]/'migrations'))
                 qr1=seed_content()
                 pin_hash=None
-                password_hash=Desktop.query.first().password_hash
+                from werkzeug.security import generate_password_hash
+                password_hash=generate_password_hash('forty-two')
                 for i in range(count):
                     if i % 5 == 0:
                         batch=Batch(number=i//5+1,capacity=5,status='RELEASED' if i==0 else 'WAITING',
@@ -55,15 +56,20 @@ def simulate(count, database_url=None):
                               batch_id=batch.id,batch_position=i%5+1)
                     if pin_hash is None:team.set_pin('123456');pin_hash=team.pin_hash
                     else:team.pin_hash=pin_hash
-                    qr=QRChallenge(qr_id=f'SIM-DESKTOP-{i}',secure_token=f'sim-desktop-{i}',round_id=3,clue='Test clue',status='ACTIVE')
-                    db.session.add_all([team,qr]);db.session.flush()
-                    db.session.add(Desktop(name=f'SIM-DESKTOP-{i}',qr_id=qr.id,password_hash=password_hash))
+                    qrs=[QRChallenge(qr_id=f'SIM-{kind}-{i}',secure_token=f'sim-{kind}-{i}',round_id=3,
+                                     clue='Test password clue' if kind=='password' else 'Look under the table',status='ACTIVE')
+                         for kind in ('password',)]
+                    db.session.add_all([team,*qrs]);db.session.flush()
+                    db.session.add(OfflineRound3(team_id=team.id,password_qr_id=qrs[0].id,
+                                                 password_hash=password_hash))
                 db.session.commit()
             timings=[]
             wave_count=(count+4)//5
             wave_triggers=[threading.Event() for _ in range(wave_count)]
             def run_team(i):
                 client=app.test_client()
+                judge=app.test_client()
+                assert judge.post('/admin/login',data={'username':'judge','password':'a-secure-test-password'}).status_code==302
                 def call(method,path,payload=None,expected=200):
                     before=time.monotonic()
                     response=getattr(client,method)(path,json=payload) if payload is not None else getattr(client,method)(path)
@@ -80,16 +86,19 @@ def simulate(count, database_url=None):
                 for q in questions:call('put',f"/api/team/quiz/answers/{q['id']}",{'answer':'A'})
                 call('post','/api/team/quiz/submit',{})
                 call('post','/api/team/quiz/submit',{},409)
-                call('post','/api/team/scan',{'token':f'sim-desktop-{i}'})
+                token=f'sim-password-{i}'
+                call('post','/api/team/scan',{'token':token})
                 wave_triggers[i//5].set()
                 if i%2:
-                    for _ in range(3):call('post','/api/team/desktop/password',{'password':'wrong'})
-                else:call('post','/api/team/desktop/password',{'password':'forty-two'})
-                first=call('get','/api/team/final')
-                assert first['questions']==call('get','/api/team/final')['questions']
-                for q in first['questions']:call('put',f"/api/team/final/answers/{q['id']}",{'answer':'42'})
-                call('post','/api/team/final/submit',{})
-                call('post','/api/team/final/submit',{},409)
+                    call('post','/api/team/round3/password',{'password':'wrong'})
+                assert call('post','/api/team/round3/password',{'password':'forty-two'})['password_solved']
+                with app.app_context():
+                    config_id=OfflineRound3.query.join(Team).filter(Team.team_id==f'AQ-{i:03d}').one().id
+                for action, payload in [('sheet',{'path':'PASSWORD'}),
+                                        ('submit',{}),('review',{'points':15,'reason':'Physical sheet evaluated'})]:
+                    response=judge.post(f'/api/admin/round3/{config_id}/{action}',json=payload)
+                    assert response.status_code==200,(i,action,response.get_json())
+                assert judge.post(f'/api/admin/round3/{config_id}/submit',json={}).status_code==409
                 assert call('get','/api/team/dashboard')['score'] is None
                 assert call('get','/api/leaderboard')==[]
             with ThreadPoolExecutor(max_workers=min(count,20)) as pool:
@@ -102,12 +111,11 @@ def simulate(count, database_url=None):
             with app.app_context():
                 assert all(batch.status=='COMPLETED' for batch in Batch.query)
                 assert Team.query.filter_by(status='COMPLETED').count()==count
-                assert PasswordAttempt.query.count()==count//2*3+(count-count//2)
+                assert sum(c.password_attempts for c in OfflineRound3.query)==count+count//2
                 assert Score.query.count()==count*3
                 assert all(s.points==20 for s in Score.query.filter_by(round_id=2))
-                assignments=FinalAssignment.query.all()
-                sequences={tuple(q['id'] for q in a.questions) for a in assignments}
-                assert len(sequences)>1
+                assert all(c.reviewed_at for c in OfflineRound3.query)
+                assert FinalAssignment.query.count()==0
             admin=app.test_client();admin.post('/admin/login',data={'username':'operator','password':'a-secure-test-password'})
             for n in (1,2,3):assert admin.post(f'/api/rounds/{n}/end',json={}).status_code==200
             assert admin.post('/api/results/generate',json={}).status_code==201
@@ -117,7 +125,7 @@ def simulate(count, database_url=None):
             return {'teams':count,'workers':min(count,20),'database':'postgresql' if database_url else 'sqlite',
                     'requests':len(timings),'seconds':round(time.monotonic()-started,2),
                     'p95_ms':round(ordered[int(len(ordered)*.95)]*1000,2),
-                    'distinct_final_sequences':len(sequences),'status':'PASS'}
+                    'reviewed_paper_sheets':count,'status':'PASS'}
         finally:
             with app.app_context():db.session.remove();db.engine.dispose()
             if schema:

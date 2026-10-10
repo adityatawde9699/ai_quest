@@ -38,12 +38,13 @@ def get_results():
 @admin_required
 def generate_results():
     from services.event import event_config
-    from models import FinalAssignment
+    from models import OfflineRound3
     event = event_config()
     if event.results_locked:
         return jsonify(error="Results are locked."), 409
-    if FinalAssignment.query.filter_by(reviewed=False).first():
-        return jsonify(error="Review all final assignments before generating results."), 409
+    if any(not (c := OfflineRound3.query.filter_by(team_id=t.id).first()) or not c.reviewed_at
+           for t in Team.query.filter(Team.status.notin_(("DISABLED", "DISQUALIFIED")))):
+        return jsonify(error="Review every eligible team's offline Round 3 sheet before generating results."), 409
     locked = FinalResult.query.filter_by(locked=True).first()
     if locked:
         return jsonify(error="Final results are locked and cannot be regenerated."), 409

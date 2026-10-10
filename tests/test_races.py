@@ -7,7 +7,7 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from app import create_app
 from extensions import db
-from models import ActivityLog, Batch, Desktop, DesktopSession, FinalAssignment, PasswordAttempt, QRChallenge, QuizAttempt, Score
+from models import OfflineRound3, ActivityLog, Batch, Desktop, DesktopSession, FinalAssignment, PasswordAttempt, QRChallenge, QuizAttempt, Score
 import test_event_flow as flow
 
 
@@ -15,7 +15,8 @@ class RaceTests(unittest.TestCase):
     new_team=flow.EventFlowTests.new_team
     round1=flow.EventFlowTests.round1
     quiz=flow.EventFlowTests.quiz
-    desktop=flow.EventFlowTests.desktop
+    round3=flow.EventFlowTests.round3
+    configure_round3=flow.EventFlowTests.configure_round3
     scan=flow.EventFlowTests.scan
 
     def setUp(self):
@@ -55,14 +56,23 @@ class RaceTests(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=count) as pool:return list(pool.map(action,range(count)))
 
     def test_simultaneous_passwords_never_exceed_three(self):
-        self.desktop()
-        statuses=self.race('/api/team/desktop/password',{'password':'wrong'})
+        self.round3()
+        statuses=self.race('/api/team/round3/password',{'password':'wrong'})
         self.assertEqual(statuses.count(200),3,statuses)
         self.assertEqual(statuses.count(409),9,statuses)
         with self.app.app_context():
-            self.assertEqual(DesktopSession.query.one().password_attempts,3)
-            self.assertEqual(PasswordAttempt.query.count(),3)
-            self.assertEqual(FinalAssignment.query.count(),1)
+            self.assertEqual(OfflineRound3.query.one().password_attempts,3)
+            self.assertEqual(ActivityLog.query.filter_by(action='OFFLINE_PASSWORD_ATTEMPT').count(),3)
+            self.assertEqual(FinalAssignment.query.count(),0)
+
+    def test_simultaneous_team_completion_records_finish_once(self):
+        self.round3()
+        self.team.post('/api/team/round3/password',json={'password':'forty-two'})
+        statuses=self.race('/api/team/round3/complete',{})
+        self.assertEqual(statuses.count(200),1,statuses)
+        self.assertEqual(statuses.count(409),11,statuses)
+        with self.app.app_context():
+            self.assertEqual(ActivityLog.query.filter_by(action='TEAM_OFFLINE_ROUND3_COMPLETED').count(),1)
 
     def test_simultaneous_quiz_submissions_score_once(self):
         self.round1();self.scan('round2-token')
@@ -86,13 +96,9 @@ class RaceTests(unittest.TestCase):
     def test_simultaneous_round_three_entries_release_one_batch(self):
         other,_=self.new_team()
         for _ in range(4):self.new_team()
-        with self.app.app_context():
-            qr=QRChallenge(qr_id='DESKTOP-QR-2',secure_token='round3-token-2',round_id=3,status='ACTIVE')
-            db.session.add(qr);db.session.flush()
-            desktop=Desktop(name='DESKTOP-02',qr_id=qr.id)
-            desktop.set_password('forty-two')
-            db.session.add(desktop);db.session.commit()
         self.quiz(self.team);self.quiz(other)
+        self.configure_round3(self.team)
+        self.configure_round3(other, 'round3-token-2')
         def scan(pair):
             client,token=pair
             return client.post('/api/team/scan',json={'token':token}).status_code

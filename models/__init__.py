@@ -251,7 +251,7 @@ class Event(db.Model):
     leaderboard_visible = db.Column(db.Boolean, nullable=False, default=False)
     final_question_count = db.Column(db.Integer, nullable=False, default=10)
     round_1_points = db.Column(db.Integer, nullable=False, default=0)
-    round_3_destination = db.Column(db.String(300), nullable=False, default="Contact the coordinator for your desktop station.")
+    round_3_destination = db.Column(db.String(300), nullable=False, default="Scan your Round 3 QR, solve the password riddle, and collect your question sheet from the organizer.")
     version = db.Column(db.Integer, nullable=False, default=0)
     batch_size = db.Column(db.Integer, nullable=False, default=5)
 
@@ -365,3 +365,30 @@ class RateBucket(db.Model):
     key = db.Column(db.String(64), primary_key=True)
     window = db.Column(db.Integer, nullable=False)
     count = db.Column(db.Integer, nullable=False, default=0)
+
+
+class OfflineRound3(db.Model):
+    """Per-team password QR, paper custody, and human evaluation."""
+    id = db.Column(db.Integer, primary_key=True)
+    team_id = db.Column(db.Integer, db.ForeignKey("team.id"), nullable=False, unique=True)
+    password_qr_id = db.Column(db.Integer, db.ForeignKey("qr_challenge.id"), nullable=False, unique=True)
+    password_hash = db.Column(db.String(255), nullable=False)
+    max_points = db.Column(db.Integer, nullable=False, default=100)
+    password_attempts = db.Column(db.Integer, nullable=False, default=0)
+    password_solved = db.Column(db.Boolean, nullable=False, default=False)
+    started_at = db.Column(db.DateTime(timezone=True))
+    sheet_path = db.Column(db.String(20))
+    sheet_received_at = db.Column(db.DateTime(timezone=True))
+    submitted_at = db.Column(db.DateTime(timezone=True))
+    reviewed_at = db.Column(db.DateTime(timezone=True))
+    points = db.Column(db.Integer)
+    judging_reason = db.Column(db.Text, nullable=False, default="")
+    team = db.relationship("Team")
+    password_qr = db.relationship("QRCode", foreign_keys=[password_qr_id])
+    __table_args__ = (
+        db.CheckConstraint("password_attempts BETWEEN 0 AND 3", name="ck_offline_password_attempts"),
+        db.CheckConstraint("max_points >= 0 AND (points IS NULL OR (points >= 0 AND points <= max_points))", name="ck_offline_points"),
+    )
+
+    def set_password(self, value):
+        self.password_hash = generate_password_hash(value)

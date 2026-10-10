@@ -8,6 +8,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'tests'))
 from app import create_app
 from extensions import db
+from models import OfflineRound3
 from test_event_flow import seed_content
 from werkzeug.serving import make_server
 from playwright.sync_api import sync_playwright
@@ -38,8 +39,8 @@ with tempfile.TemporaryDirectory(prefix='aiquest-browser-') as directory:
             operator.goto(base+'/admin/login',wait_until='networkidle');operator.screenshot(path='/tmp/aiquest-login-desktop.png',full_page=True);operator.locator('.password-toggle').click();assert operator.locator('[name=password]').get_attribute('type')=='text';operator.locator('.password-toggle').click();operator.locator('[name=username]').fill('operator');operator.locator('[name=password]').fill('a-secure-test-password');operator.locator('button[type=submit]').click();operator.wait_for_url('**/admin*',wait_until='domcontentloaded')
             for tab in ('teams','qrs','questions','rounds','monitoring','scores','leaderboard','results','activity','operations'):
                 operator.locator(f'[data-view={tab}]').click()
-            operator.locator('#create-desktop').wait_for();
-            for category in ('Stations','Judging & scores','QR tools','Results & exports','Configuration','Challenges'):
+            operator.locator('#create-round3').wait_for();
+            for category in ('Round 3 · offline','Judging & scores','QR tools','Results & exports','Configuration','Challenges'):
                 operator.get_by_role('button',name=category,exact=True).click()
                 assert operator.locator('.operations-group:visible').count()==1
                 assert operator.get_by_role('button',name=category,exact=True).evaluate('(n) => getComputedStyle(n).backgroundColor')=='rgb(40, 57, 173)'
@@ -54,7 +55,7 @@ with tempfile.TemporaryDirectory(prefix='aiquest-browser-') as directory:
             assert operator.locator('#menu-toggle').get_attribute('aria-expanded')=='true'
             operator.keyboard.press('Escape');assert operator.locator('#menu-toggle').get_attribute('aria-expanded')=='false'
             assert operator.evaluate('document.documentElement.scrollWidth <= innerWidth')
-            operator.set_viewport_size({'width':1440,'height':1000});operator.locator('[data-view=operations]').click();operator.locator('#create-desktop').wait_for()
+            operator.set_viewport_size({'width':1440,'height':1000});operator.locator('[data-view=operations]').click();operator.locator('#create-round3').wait_for()
 
             assert operator.evaluate('typeof io')=='function'
             operator.locator('#connection-status').filter(has_text='Live updates connected').wait_for()
@@ -63,7 +64,28 @@ with tempfile.TemporaryDirectory(prefix='aiquest-browser-') as directory:
             operator.locator('.quiz-picker .empty-state').wait_for()
             assert operator.locator('#create-quiz button').is_disabled()
             assert operator.get_by_role('link',name='Open question bank').is_visible()
-            operator.unroute('**/api/admin/questions');operator.locator('[data-view=operations]').click();operator.locator('#create-desktop').wait_for()
+            operator.unroute('**/api/admin/questions');operator.locator('[data-view=operations]').click();operator.locator('#create-round3').wait_for()
+
+            operator.locator('[data-view=qrs]').click()
+            operator.locator('#add-qr').click()
+            operator.locator('#qr-form [name=round_id]').select_option('3')
+            operator.locator('#qr-form [name=team_id]').select_option(str(credentials['team']['id']))
+            for name,value in {'title':'Team password riddle','clue':'The answer to life','password':'forty-two','max_points':'100','expiry_date':'2030-01-01','expiry_time':'12:00'}.items():
+                operator.locator(f'#qr-form [name={name}]').fill(value)
+            operator.locator('#qr-submit').click()
+            operator.locator('#qr-form').wait_for(state='detached')
+            operator.locator('#modal-root img').wait_for()
+            operator.locator('.modal-close').click()
+            operator.locator('[data-view=operations]').click()
+            operator.get_by_role('button',name='Round 3 · offline',exact=True).click()
+            operator.locator('#ops-round3 details').wait_for()
+            operator.locator('#ops-round3 summary').click()
+            operator.locator('[data-r3-action=activate]').click()
+            operator.locator('#ops-round3').filter(has_text='ACTIVE').wait_for()
+            with app.app_context():
+                config=OfflineRound3.query.one()
+                config_id=config.id
+                password_token=config.password_qr.secure_token
 
             operator.screenshot(path='/tmp/aiquest-admin.png',full_page=True)
             phone=page_for({'width':390,'height':844})
@@ -89,15 +111,50 @@ with tempfile.TemporaryDirectory(prefix='aiquest-browser-') as directory:
             phone.locator('#challenge-form button').click();phone.locator('#quiz-box').filter(has_text='Results will be announced later').wait_for()
             phone.locator('#team-status[data-state=ROUND_2_COMPLETED]').wait_for()
             assert phone.locator('#team-score').inner_text()=='Pending'
-            scan('round3-token');phone.locator('#desktop-open').wait_for(state='visible');phone.screenshot(path='/tmp/aiquest-phone.png',full_page=True)
-            desktop=page_for({'width':1280,'height':900});login_team(desktop);desktop.goto(base+'/desktop/1')
-            for i in range(3):
-                desktop.locator('#password').fill('wrong');desktop.locator('#password-form button').click();desktop.locator('#attempts').filter(has_text=f'Attempts remaining: {2-i}').wait_for()
-            desktop.locator('#challenge-form').wait_for()
-            for field in desktop.locator('#challenge-form textarea').all():field.fill('42');field.blur()
-            desktop.locator('#save-status').filter(has_text='All answers saved').wait_for();desktop.locator('#challenge-form button').click();desktop.locator('#quiz-box').filter(has_text='Submission confirmed').wait_for();desktop.screenshot(path='/tmp/aiquest-desktop.png',full_page=True)
+            scan(password_token);phone.locator('#round3-password-form').wait_for(state='visible')
+            phone.locator('#round3-password').fill('wrong');phone.locator('#round3-password-form button').click()
+            phone.locator('#round3-attempts').filter(has_text='2').wait_for()
+            phone.locator('#round3-password').fill('forty-two');phone.locator('#round3-password-form button').click()
+            phone.locator('#round3-status').filter(has_text='Password accepted').wait_for()
+            assert phone.locator('#round3-password-form').is_hidden()
+            phone.reload(wait_until='domcontentloaded')
+            phone.locator('#round3-status').filter(has_text='Password accepted').wait_for()
+            assert phone.evaluate('document.documentElement.scrollWidth <= innerWidth')
+            phone.screenshot(path='/tmp/aiquest-phone.png',full_page=True)
+            phone.on('dialog',lambda dialog:dialog.accept())
+            phone.locator('#complete-round3').click()
+            phone.locator('#team-status[data-state=COMPLETED]').wait_for()
+            saved_time=phone.locator('#team-elapsed').inner_text()
+            phone.wait_for_timeout(1200)
+            assert phone.locator('#team-elapsed').inner_text()==saved_time
+            phone.reload(wait_until='domcontentloaded')
+            phone.locator('#team-status[data-state=COMPLETED]').wait_for()
+            assert phone.locator('#team-elapsed').inner_text()==saved_time
+            assert phone.locator('#complete-round3').is_hidden()
+            operator.locator('[data-view=operations]').click()
+            operator.get_by_role('button',name='Round 3 · offline',exact=True).click()
+            operator.locator('#ops-round3 summary').click()
+            operator.locator('[data-r3-sheet] button').click()
+            operator.locator('[data-r3-action=submit]').wait_for(state='attached')
+            operator.locator('#ops-round3 summary').click()
+            operator.locator('[data-r3-action=submit]').click()
+            operator.locator('#ops-round3').filter(has_text='Paper submitted').wait_for()
+            operator.get_by_role('button',name='Judging & scores',exact=True).click()
+            operator.locator('[data-r3-review] [name=points]').fill('75')
+            operator.locator('[data-r3-review] [name=reason]').fill('Paper evaluated by organizer')
+            operator.evaluate('window.refreshRound3Monitor()')
+            assert operator.locator('[data-r3-review] [name=reason]').input_value()=='Paper evaluated by organizer'
+            operator.locator('[data-r3-review] button').click()
+            operator.locator('[data-r3-review]').filter(has_text='Reviewed').wait_for()
+            phone.reload(wait_until='domcontentloaded')
+            phone.locator('#team-status[data-state=COMPLETED]').wait_for()
+            phone.locator('#round3-status').filter(has_text='paper submission is recorded').wait_for()
+            assert phone.locator('#team-score').inner_text()=='Pending'
+            assert phone.locator('#desktop-open').count()==0
+            with app.app_context():
+                assert OfflineRound3.query.one().points==75
             assert not errors,errors
-            browser.close();print('PASS: admin navigation, mobile login/QR/quiz autosave/submission, desktop three-attempt unlock and final submission, CSRF enabled; keyboard/mobile navigation, grouped operations and quiz selection, credential visibility, responsive layouts; no browser exceptions.')
+            browser.close();print('PASS: admin navigation, mobile login/QR/quiz autosave/submission, phone password verification, one password riddle QR, organizer sheet collection/return and manual scoring, CSRF enabled; keyboard/mobile navigation, grouped operations and quiz selection, credential visibility, responsive layouts; no browser exceptions.')
     finally:
         server.shutdown()
         with app.app_context():db.session.remove();db.engine.dispose()

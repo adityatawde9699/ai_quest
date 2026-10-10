@@ -6,7 +6,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import selectinload
 
 from extensions import db
-from models import (Answer, Batch, DesktopSession, FinalAssignment, FinalResult,
+from models import (OfflineRound3, Answer, Batch, DesktopSession, FinalAssignment, FinalResult,
                     QRScanEvent, QuizAttempt, Round, RoundSession, ScanLog, Score,
                     Team, TeamMember, utcnow)
 from routes.common import admin_required, audit, emit_activity, emit_leaderboard, iso_utc, team_required
@@ -147,7 +147,7 @@ def update_or_delete_team(team_pk):
             if current_user.role != "super-admin":
                 return jsonify(error="Super-admin access is required to permanently delete a team."), 403
             progress_models = (RoundSession, ScanLog, QRScanEvent, Answer, QuizAttempt,
-                               DesktopSession, FinalAssignment, Score, FinalResult)
+                               DesktopSession, FinalAssignment, Score, FinalResult, OfflineRound3)
             if any(model.query.filter_by(team_id=team.id).first() for model in progress_models):
                 return jsonify(error="This team has recorded activity or results. Archive it to preserve its history."), 409
             audit("TEAM_PERMANENTLY_DELETED", team.team_id)
@@ -280,7 +280,6 @@ def team_timeline(team_pk):
 @team_required
 def team_summary():
     from services.event import event_config
-    from models import DesktopSession, QRChallenge
     team = current_user
     event = event_config()
     sessions = team.round_sessions
@@ -291,16 +290,21 @@ def team_summary():
     for key in ("score", "bonus", "penalty"):
         payload.pop(key, None)
     scans = ScanLog.query.filter_by(team_id=team.id).order_by(ScanLog.scan_time).all()
-    desktop = DesktopSession.query.filter_by(team_id=team.id).first()
+    from services.offline_round3 import participant_status
+    from models import utcnow
+    now = utcnow()
+    elapsed = sum(max(0, int(((s.ended_at.replace(tzinfo=timezone.utc) if s.ended_at else now) - s.started_at.replace(tzinfo=timezone.utc)).total_seconds()))
+                  for s in sessions if s.started_at and (s.ended_at or s.status == "ACTIVE"))
     return jsonify(team=payload, current_round=event_round.name if event_round else "Quest complete",
         round_id=event_round.id if event_round else None, round_number=event_round.number if event_round else None,
         round_status=event_round.status if event_round and event.active else "LOCKED",
         round_started_at=iso_utc(session.started_at) if session else None, session_active=bool(session),
+        elapsed_seconds=elapsed,
         score=sum(s.points for s in team.scores)+team.bonus-team.penalty if event.results_published else None,
         results_published=event.results_published,
         clue=next((s.challenge.clue or (s.challenge.question.prompt if s.challenge.question else "") for s in scans if s.challenge.round.number == 1), None),
         destination=event.round_3_destination if team.state in ("ROUND_2_COMPLETED", "ROUND_3_ACTIVE", "PASSWORD_CHALLENGE", "FINAL_CHALLENGE") else None,
-        desktop_id=desktop.desktop_id if desktop else None)
+        round3=participant_status(team))
 
 
 @teams_bp.get("/api/team/rounds")
@@ -318,7 +322,7 @@ def start_team_round(round_id):
     from services.event import start_round
     event_round = db.session.get(Round, round_id)
     if not event_round or event_round.number != 1:
-        return jsonify(error="Scan the destination or desktop QR to start this round."), 409
+        return jsonify(error="Scan the destination or Round 3 QR to start this round."), 409
     session = start_round(current_user, 1)
     db.session.commit()
     emit_activity(f"{current_user.team_id} started Round 1", "round")
