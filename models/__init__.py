@@ -46,6 +46,7 @@ class Team(UserMixin, db.Model):
 
     state = db.Column(db.String(30), nullable=False, default="REGISTERED", index=True)
     assigned_qr_id = db.Column(db.Integer, db.ForeignKey("qr_challenge.id"))
+    assigned_round2_qr_id = db.Column(db.Integer, db.ForeignKey("qr_challenge.id"), index=True)
     bonus = db.Column(db.Integer, nullable=False, default=0)
     penalty = db.Column(db.Integer, nullable=False, default=0)
     batch_id = db.Column(db.Integer, db.ForeignKey("batch.id"), index=True)
@@ -140,11 +141,18 @@ class QRCode(db.Model):
 
     title = db.Column(db.String(120), nullable=False, default="")
     clue = db.Column(db.Text, nullable=False, default="")
+    password_hash = db.Column(db.String(255))
     updated_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
 
     round = db.relationship("Round", back_populates="challenges")
     question = db.relationship("Question")
     scans = db.relationship("QRScan", back_populates="challenge", cascade="all, delete-orphan")
+
+    def set_password(self, value):
+        self.password_hash = generate_password_hash(value)
+
+    def check_password(self, value):
+        return bool(self.password_hash and check_password_hash(self.password_hash, value))
 
 
 class QRScan(db.Model):
@@ -371,7 +379,7 @@ class OfflineRound3(db.Model):
     """Per-team password QR, paper custody, and human evaluation."""
     id = db.Column(db.Integer, primary_key=True)
     team_id = db.Column(db.Integer, db.ForeignKey("team.id"), nullable=False, unique=True)
-    password_qr_id = db.Column(db.Integer, db.ForeignKey("qr_challenge.id"), nullable=False, unique=True)
+    password_qr_id = db.Column(db.Integer, db.ForeignKey("qr_challenge.id"), nullable=False, index=True)
     password_hash = db.Column(db.String(255), nullable=False)
     max_points = db.Column(db.Integer, nullable=False, default=100)
     password_attempts = db.Column(db.Integer, nullable=False, default=0)

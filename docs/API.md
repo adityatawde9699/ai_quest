@@ -30,12 +30,12 @@ submission and QR-answer endpoints are removed.
 ## Administration
 
 - `/api/overview`, `/api/admin/monitoring`, `/api/admin/activity`, `/api/admin/scores`: GET.
-- `/api/teams`: GET search `?q=...`, POST name/member_1..3/login_pin/assigned_qr_id.
-- `/api/teams/:id`: PUT edits/assigned_qr_id/status; DELETE archives.
+- `/api/teams`: GET search `?q=...`, POST name/member_1..3/login_pin/assigned_qr_id/assigned_round2_qr_id/round3_qr_id/round3_max_points.
+- `/api/teams/:id`: PUT edits team details, Round 1, Round 2 and Round 3 QR assignments, maximum Round 3 marks and status; DELETE archives.
 - `/api/teams/:id/reset-pin`: POST, shown once; previous sessions revoked.
 - `/api/teams/:id/timeline`: GET team members, progress, scores and complete activity.
 - `/api/rounds`: GET; `/api/rounds/:id/{unlock,start,pause,resume,end}`: POST.
-- `/api/qrs`: GET, POST (Round 3 additionally requires team_id/password/max_points) round_id/qr_number/title/clue/room/question_id/quiz_id/expires_at.
+- `/api/qrs`: GET, POST round_id/qr_number/title/clue/room/question_id/quiz_id/expires_at. Round 3 additionally requires qr_number and password; assignment happens in Team Management. The password hash is never returned.
 - `/api/qrs/:id`: PATCH before use; `/{activate,deactivate,regenerate,archive}`: POST.
 - `/api/qrs/:id/image`: GET PNG; `/api/qrs/download`: GET ZIP; `/admin/qrs/print`: GET.
 - `/api/admin/scans`: GET complete scan events (latest 1000, optional team_id);
@@ -44,8 +44,7 @@ submission and QR-answer endpoints are removed.
   kind/position/prompt/options/correct_answer/points are server-controlled.
 - `/api/admin/quizzes`: GET/POST `{title, question_ids:[ten ordered ids]}`;
   `/:id`: PATCH active/question_ids before attempts.
-- `/api/admin/round3`: GET progress; POST `{team_id,password_clue,password,room,max_points}`
-  creates one inactive, uniquely assigned password QR. Password/hash is never returned.
+- `/api/admin/round3`: GET progress; POST `{team_id,password_qr_id,max_points}` assigns an existing Round 3 QR to a team, subject to the one-assignment-per-batch rule.
 - `/api/admin/round3/:id`: PATCH riddles/password/room/max_points before entry.
 - `/api/admin/round3/:id/{activate,deactivate}`: POST `{}` controls the password QR.
 - `/api/admin/round3/:id/sheet`: POST `{}` confirms organizer sheet handover after a verified password.

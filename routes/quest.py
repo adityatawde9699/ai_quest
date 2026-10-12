@@ -6,7 +6,7 @@ from flask_login import current_user
 
 from extensions import db
 from models import (Answer, QRChallenge, QRScanEvent, QuizAttempt, ScanLog,
-                    Round, OfflineRound3, utcnow)
+                    Round, OfflineRound3, Team, utcnow)
 from routes.common import audit, emit_activity, iso_utc, team_required
 from services.event import (EventError, active_round, event_config,
                             finish_round, public_questions,
@@ -50,6 +50,12 @@ def scan_qr():
                     raise EventError("Scan the QR number on your assigned envelope.")
             elif number == 2:
                 active_round(2)
+                if team.assigned_round2_qr_id and team.assigned_round2_qr_id != challenge.id:
+                    raise EventError("Scan the Round 2 quiz QR assigned to your team.")
+                if team.batch_id is not None and ScanLog.query.join(Team, ScanLog.team_id == Team.id).filter(
+                        ScanLog.qr_id == challenge.id, ScanLog.team_id != team.id,
+                        Team.batch_id == team.batch_id).first():
+                    raise EventError("Your batch has already used this Round 2 QR. Scan a different QR.")
                 if team.state not in ("ROUND_1_COMPLETED", "ROUND_2_ACTIVE"):
                     raise EventError("Complete Round 1 first.")
                 initial = ScanLog.query.join(QRChallenge).join(Round).filter(ScanLog.team_id == team.id, Round.number == 1).first()
@@ -105,7 +111,8 @@ def scan_qr():
         emit_activity(f"Batch {released_batch.number} released after {team.team_id} entered Round 3", "batch")
     emit_activity(f"{team.team_id} scanned {challenge.qr_id}", "scan")
     return jsonify(scan_id=scan.id, qr_id=challenge.qr_id, round=number,
-                   prompt=challenge.clue or (challenge.question.prompt if number == 1 and challenge.question else ""),
+                   prompt=(challenge.clue or (challenge.question.prompt if number == 1 and challenge.question else ""))
+                   if number in (1, 3) else "",
                    requires_answer=False, message=message)
 
 
@@ -137,10 +144,19 @@ def get_quiz():
     if not attempt:
         raise EventError("Scan your destination QR to open the quiz.")
     answers = Answer.query.filter_by(team_id=current_user.id, round_id=Round.query.filter_by(number=2).one().id).all()
+    riddle = _round2_riddle(current_user) if attempt.submitted_at else None
     return jsonify(questions=public_questions(attempt.assignments),
                    answers={str(a.question_id): a.selected_answer for a in answers},
                    submitted_at=iso_utc(attempt.submitted_at),
-                   destination=event_config().round_3_destination if attempt.submitted_at else None)
+                   destination=event_config().round_3_destination if attempt.submitted_at else None,
+                   riddle=riddle)
+
+
+def _round2_riddle(team):
+    scan = (ScanLog.query.join(QRChallenge).join(Round)
+            .filter(ScanLog.team_id == team.id, Round.number == 2)
+            .order_by(ScanLog.scan_time.desc()).first())
+    return scan.challenge.clue if scan else None
 
 
 @quest_bp.put("/api/team/quiz/answers/<int:question_id>")
@@ -184,7 +200,9 @@ def submit_quiz():
     audit("QUIZ_SUBMITTED", current_user.team_id)
     db.session.commit()
     emit_activity(f"{current_user.team_id} submitted quiz", "quiz")
-    return jsonify(message="Quiz submitted successfully. Your responses have been recorded. Results will be announced later.", destination=event_config().round_3_destination)
+    return jsonify(message="Quiz submitted successfully. Your responses have been recorded. Results will be announced later.",
+                   destination=event_config().round_3_destination,
+                   riddle=_round2_riddle(current_user))
 
 
 

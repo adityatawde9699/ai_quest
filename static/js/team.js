@@ -63,7 +63,7 @@
     try {
       $('manual-scan').querySelector('button').disabled=true;
       const result=await api('/api/team/scan',{method:'POST',body:JSON.stringify({token})});
-      $('scan-result').hidden=false;$('scan-result').textContent=`${result.qr_id}\n${result.prompt}\n${result.message}`;
+      $('scan-result').hidden=false;$('scan-result').textContent=result.round===2?'Destination verified. Your quiz is ready below.':`${result.qr_id}\n${result.prompt}\n${result.message}`;
       if(result.round===2)await openQuiz();
       await refresh();
     }catch(e){toast(e.message,true);}finally{$('manual-scan').querySelector('button').disabled=false;}
@@ -104,10 +104,11 @@
   async function renderChallenge(kind, box) {
     const result=await api(`/api/team/${kind}`);
     box.hidden=false;
-    if(result.submitted_at){box.innerHTML='<div class="completion-card" role="status"><h3>Submission confirmed.</h3><p>Your responses have been recorded. Results will be announced later.</p></div>';return;}
-    box.innerHTML=`<div class="challenge-heading"><h3>${kind==='quiz'?'Round 2 quiz':'Final challenge'}</h3><span class="challenge-progress" id="answer-progress"></span></div><form id="challenge-form"><p id="save-status" role="status">Answers saved on the server are restored below.</p>${result.questions.map((q,i)=>`<label class="question-row">${i+1}. ${esc(q.prompt)}${q.kind==='MCQ'?`<select required data-question="${q.id}"><option value="">Choose an answer</option>${Object.entries(q.options).map(([key,value])=>`<option value="${key}">${key}. ${esc(value)}</option>`).join('')}</select>`:q.kind==='TRUE/FALSE'?`<select required data-question="${q.id}"><option value="">Choose an answer</option><option>TRUE</option><option>FALSE</option></select>`:`<textarea required maxlength="4000" rows="3" data-question="${q.id}"></textarea>`}</label>`).join('')}<button class="button primary" type="submit">Submit ${kind==='quiz'?'quiz':'final challenge'}</button></form>`;
+    if(result.submitted_at){box.innerHTML=`<div class="completion-card" role="status"><h3 tabindex="-1">Submission confirmed.</h3><p>Your responses have been recorded. Results will be announced later.</p>${kind==='quiz'&&result.riddle?`<p><strong>Round 2 riddle:</strong> ${esc(result.riddle)}</p>`:''}</div>`;box.scrollIntoView({behavior:'smooth',block:'start'});box.querySelector('h3')?.focus({preventScroll:true});return;}
+    box.innerHTML=`<div class="challenge-heading"><h3 tabindex="-1">${kind==='quiz'?'Round 2 quiz':'Final challenge'}</h3><div class="challenge-progress-wrap"><span class="challenge-progress" id="answer-progress">0 of ${result.questions.length} answered</span><span class="progress-track" role="progressbar" aria-label="Quiz answers completed" aria-valuemin="0" aria-valuemax="${result.questions.length}" aria-valuenow="0"><i></i></span></div></div><form id="challenge-form"><p id="save-status" role="status">Your answers save as you go.</p>${result.questions.map((q,i)=>`<label class="question-row"><span class="question-number">${String(i+1).padStart(2,'0')}</span><span class="question-prompt">${esc(q.prompt)}</span>${q.kind==='MCQ'?`<select required data-question="${q.id}"><option value="">Choose an answer</option>${Object.entries(q.options).map(([key,value])=>`<option value="${key}">${key}. ${esc(value)}</option>`).join('')}</select>`:q.kind==='TRUE/FALSE'?`<select required data-question="${q.id}"><option value="">Choose an answer</option><option>TRUE</option><option>FALSE</option></select>`:`<textarea required maxlength="4000" rows="3" data-question="${q.id}"></textarea>`}</label>`).join('')}<button class="button primary" type="submit">Submit ${kind==='quiz'?'quiz':'final challenge'}</button></form>`;
+    box.scrollIntoView({behavior:'smooth',block:'start'});box.querySelector('.challenge-heading h3')?.focus({preventScroll:true});
     let pending=new Map(),saving=false;
-    const progress=()=>{const fields=[...box.querySelectorAll('[data-question]')];box.querySelector('#answer-progress').textContent=`${fields.filter(f=>f.value.trim()).length} of ${fields.length} answered`;};
+    const progress=()=>{const fields=[...box.querySelectorAll('[data-question]')],count=fields.filter(f=>f.value.trim()).length;box.querySelector('#answer-progress').textContent=`${count} of ${fields.length} answered`;const bar=box.querySelector('[role="progressbar"]');bar.setAttribute('aria-valuenow',count);bar.style.setProperty('--progress',`${fields.length?count/fields.length*100:0}%`);};
     const prefix=`quest:${summary?.team.team_id||document.body.dataset.team}:${kind}:`;
     const state=box.querySelector('#save-status');
     async function flush() {
@@ -132,7 +133,7 @@
       e.preventDefault();box.querySelectorAll('[data-question]').forEach(input=>{if(input.value.trim())pending.set(input.dataset.question,input.value);});
       await flush();if(pending.size||saving)return toast('Wait until every answer is saved.',true);
       const button=box.querySelector('button');button.disabled=true;
-      try{const response=await api(`/api/team/${kind}/submit`,{method:'POST',body:'{}'});box.innerHTML=`<div class="completion-card" role="status"><h3>Submission confirmed.</h3><p>${esc(response.message)}</p></div>`;if(!document.body.dataset.desktop)await refresh();}catch(e){toast(e.message,true);button.disabled=false;}
+      try{const response=await api(`/api/team/${kind}/submit`,{method:'POST',body:'{}'});box.innerHTML=`<div class="completion-card" role="status"><h3>Submission confirmed.</h3><p>${esc(response.message)}</p>${kind==='quiz'&&response.riddle?`<p><strong>Round 2 riddle:</strong> ${esc(response.riddle)}</p>`:''}</div>`;if(!document.body.dataset.desktop)await refresh();}catch(e){toast(e.message,true);button.disabled=false;}
     };
   }
   async function openQuiz(){try{await renderChallenge('quiz',$('quiz-box'));}catch(e){toast(e.message,true);}}

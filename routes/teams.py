@@ -7,13 +7,113 @@ from sqlalchemy.orm import selectinload
 
 from extensions import db
 from models import (OfflineRound3, Answer, Batch, DesktopSession, FinalAssignment, FinalResult,
-                    QRScanEvent, QuizAttempt, Round, RoundSession, ScanLog, Score,
+                    QRChallenge, QRScanEvent, QuizAttempt, Round, RoundSession, ScanLog, Score,
                     Team, TeamMember, utcnow)
 from routes.common import admin_required, audit, emit_activity, emit_leaderboard, iso_utc, team_required
 from utils.security import new_team_pin
 
 teams_bp = Blueprint("teams", __name__)
 TEAM_STATUSES = {"READY", "ACTIVE", "COMPLETED", "DISQUALIFIED", "DISABLED"}
+
+
+def _qr_batch_conflict(team, batch_id, *, assigned_qr_id=None):
+    if batch_id is None:
+        return False
+    from models import QRChallenge
+    qr_id = team.assigned_qr_id if assigned_qr_id is None else assigned_qr_id
+    if qr_id and Team.query.filter(Team.id != team.id, Team.batch_id == batch_id,
+                                   Team.assigned_qr_id == qr_id).first():
+        return True
+    round2_qr_id = team.assigned_round2_qr_id
+    if round2_qr_id and Team.query.filter(
+            Team.id != team.id, Team.batch_id == batch_id,
+            Team.assigned_round2_qr_id == round2_qr_id).first():
+        return True
+    config = OfflineRound3.query.filter_by(team_id=team.id).first()
+    if config and OfflineRound3.query.join(Team, OfflineRound3.team_id == Team.id).filter(
+            OfflineRound3.team_id != team.id, Team.batch_id == batch_id,
+            OfflineRound3.password_qr_id == config.password_qr_id).first():
+        return True
+    from models import Round
+    round2_id = db.session.query(Round.id).filter_by(number=2).scalar()
+    round2_qr_ids = [row[0] for row in db.session.query(ScanLog.qr_id).join(
+        QRChallenge, ScanLog.qr_id == QRChallenge.id
+    ).filter(ScanLog.team_id == team.id, QRChallenge.round_id == round2_id).all()]
+    if round2_qr_ids and ScanLog.query.join(Team, ScanLog.team_id == Team.id).filter(
+            Team.id != team.id, Team.batch_id == batch_id,
+            ScanLog.qr_id.in_(round2_qr_ids)).first():
+        return True
+    return False
+
+
+def _set_round2_qr(team, raw_qr_id):
+    from services.event import EventError
+    if raw_qr_id in (None, ""):
+        if team.assigned_round2_qr_id and (
+                QuizAttempt.query.filter_by(team_id=team.id).first()
+                or ScanLog.query.filter_by(team_id=team.id).join(
+                    QRChallenge, ScanLog.qr_id == QRChallenge.id
+                ).join(Round, QRChallenge.round_id == Round.id).filter(Round.number == 2).first()):
+            raise EventError("Round 2 QR assignment is locked after the team starts Round 2.")
+        team.assigned_round2_qr_id = None
+        return
+    try:
+        qr_id = int(raw_qr_id)
+    except (TypeError, ValueError):
+        raise EventError("Select a valid Round 2 QR.", 400)
+    qr = db.session.get(QRChallenge, qr_id)
+    if not qr or qr.round.number != 2 or qr.status == "ARCHIVED" or not qr.quiz_id:
+        raise EventError("Select a configured, non-archived Round 2 quiz QR.", 400)
+    if team.assigned_round2_qr_id == qr.id:
+        return
+    if (QuizAttempt.query.filter_by(team_id=team.id).first()
+            or ScanLog.query.filter_by(team_id=team.id).join(
+                QRChallenge, ScanLog.qr_id == QRChallenge.id
+            ).join(Round, QRChallenge.round_id == Round.id).filter(Round.number == 2).first()):
+        raise EventError("Round 2 QR assignment is locked after the team starts Round 2.")
+    team.assigned_round2_qr_id = qr.id
+
+
+def _set_round3_qr(team, raw_qr_id, raw_max_points=None):
+    from services.event import EventError
+    config = OfflineRound3.query.filter_by(team_id=team.id).first()
+    if config and raw_qr_id not in (None, "") and str(raw_qr_id) == str(config.password_qr_id):
+        if raw_max_points not in (None, ""):
+            from routes.operations import integer
+            value = integer(raw_max_points)
+            if config.started_at and value != config.max_points:
+                raise EventError("Round 3 maximum marks are locked after the team starts.")
+            config.max_points = value
+        return
+    round3_started = RoundSession.query.join(Round).filter(
+        RoundSession.team_id == team.id, Round.number == 3).first()
+    if round3_started or (config and config.started_at):
+        raise EventError("Round 3 QR assignment is locked after the team starts Round 3.")
+    if raw_qr_id in (None, ""):
+        if config:
+            db.session.delete(config)
+        return
+    from models import QRChallenge
+    try:
+        qr_id = int(raw_qr_id)
+    except (TypeError, ValueError):
+        raise EventError("Select a valid Round 3 QR.", 400)
+    qr = db.session.get(QRChallenge, qr_id)
+    if not qr or qr.round.number != 3 or qr.status == "ARCHIVED" or not qr.password_hash:
+        raise EventError("Select a configured, non-archived Round 3 QR with a password.", 400)
+    if config and config.password_qr_id == qr.id:
+        return
+    if config:
+        config.password_qr_id = qr.id
+        config.password_hash = qr.password_hash
+        config.password_attempts = 0
+        config.password_solved = False
+    else:
+        from routes.operations import integer
+        config = OfflineRound3(team_id=team.id, password_qr_id=qr.id,
+                               password_hash=qr.password_hash,
+                               max_points=integer(raw_max_points if raw_max_points not in (None, "") else 100))
+        db.session.add(config)
 
 
 def _batch_position(values):
@@ -27,6 +127,7 @@ def _batch_position(values):
 
 
 def _team_payload(team):
+    round3 = OfflineRound3.query.filter_by(team_id=team.id).first()
     return {
         "id": team.id,
         "team_id": team.team_id,
@@ -42,6 +143,9 @@ def _team_payload(team):
         "created_at": iso_utc(team.created_at),
         "state": team.state,
         "assigned_qr_id": team.assigned_qr_id,
+        "assigned_round2_qr_id": team.assigned_round2_qr_id,
+        "round3_qr_id": round3.password_qr_id if round3 else None,
+        "round3_max_points": round3.max_points if round3 else 100,
         "bonus": team.bonus, "penalty": team.penalty,
         "score": sum(score.points for score in team.scores) + team.bonus - team.penalty,
     }
@@ -113,6 +217,8 @@ def create_team():
         if not qr or qr.round.number != 1:
             return jsonify(error="Assign a valid Round 1 QR."), 400
         team.assigned_qr_id = qr.id
+    if data.get("assigned_round2_qr_id"):
+        _set_round2_qr(team, data["assigned_round2_qr_id"])
     team.set_pin(pin)
     team.members = [
         TeamMember(name=value, position=position)
@@ -126,6 +232,11 @@ def create_team():
     if data.get("batch_id") and not batch:
         return jsonify(error="Batch not found."), 404
     assign(team, batch, _batch_position(data))
+    if data.get("round3_qr_id"):
+        _set_round3_qr(team, data["round3_qr_id"], data.get("round3_max_points"))
+    if _qr_batch_conflict(team, team.batch_id):
+        db.session.rollback()
+        return jsonify(error="A team in this batch already has that QR assigned."), 409
     audit("Team created", team.team_id)
     db.session.commit()
     emit_activity(f"{team.team_id} team created", "team")
@@ -189,6 +300,8 @@ def update_or_delete_team(team_pk):
         if not qr or qr.round.number != 1 or team.round_sessions:
             return jsonify(error="Assign a Round 1 QR before the team starts."), 409
         team.assigned_qr_id = qr.id
+    if "assigned_round2_qr_id" in data:
+        _set_round2_qr(team, data["assigned_round2_qr_id"])
     if "status" in data:
         status = str(data["status"]).upper()
         if status not in TEAM_STATUSES:
@@ -216,6 +329,11 @@ def update_or_delete_team(team_pk):
         if not batch:
             return jsonify(error="Batch not found."), 404
         assign(team, batch, _batch_position(data))
+    if "round3_qr_id" in data:
+        _set_round3_qr(team, data["round3_qr_id"], data.get("round3_max_points"))
+    if _qr_batch_conflict(team, team.batch_id):
+        db.session.rollback()
+        return jsonify(error="This batch already has a team assigned the same QR. Choose another batch or QR."), 409
     audit("Team edited", team.team_id)
     from services.batches import mark_completed
     mark_completed(team)

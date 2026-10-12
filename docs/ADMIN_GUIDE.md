@@ -7,8 +7,8 @@ exceptions. Keep at least two trusted super-admins for recovery; each should hav
 password. Account changes and PIN resets revoke existing affected sessions.
 
 The existing console includes Teams, QR Management, Questions, Round Control, Live Monitor,
-Scores, Leaderboard, Results and Audit Logs. **Event Operations** adds quizzes, Round 3 password QRs,
-offline sheet judging, score adjustments, exports, QR editing/token rotation and critical controls.
+Scores, Leaderboard, Results and Audit Logs. **Event Operations** adds quiz setup, Round 3
+paper progress and judging, score adjustments, exports, QR editing/token rotation and critical controls.
 
 Event Operations groups tools into Challenges, Round 3 · offline, Judging & scores, QR tools,
 Results & exports, and Configuration. The quiz builder uses checkboxes and shows how
@@ -20,14 +20,18 @@ The header reports the live connection separately from the event's active/paused
 1. Create 1–3 named members per team. Generated PINs are displayed once. Save/share them
    privately; never place the credential list on a public noticeboard.
 2. Add Round 1 riddles as QR clue text. Generate named QR codes, preview their PNGs and
-   assign each team's Round 1 QR database ID in the team editor. The label goes on the
-   envelope. Match Round 1 destination and Round 2 room strings exactly.
+   assign each team's Round 1 QR in the team editor. Configure Round 2 quiz QRs with a
+   quiz, then assign the appropriate Round 2 QR from the same team editor. The same Round 2
+   QR can be reused across batches, once per batch. Match Round 1 destination and Round 2
+   room strings exactly.
 3. Create Round 2 MCQs with all four options and correct keys. Select exactly ten in the
    quiz builder. Questions appear by configured order; selected IDs define quiz order.
    API clients can specify a different explicit ordering. Attach quiz ID to destination QR.
-4. In QR Management → Create QR, select Round 3 and configure each team's password riddle, secret password,
-   room, and maximum paper marks. Event Operations → Challenges provides the same setup. This creates one inactive QR per team. Download/print
-   it from Round 3 · offline. Prepare physical question/answer sheets to hand out after
+4. In QR Management → Create QR, select Round 3 and enter its QR number, title, riddle, and
+   password. Then open each team in Teams and assign its Round 3 password QR. The QR's
+   riddle and password are shared by every team assigned that QR; assign it at most once
+   within a batch. Set each team's maximum paper marks in the team editor. Download/print
+   the QR from QR Management. Prepare physical question/answer sheets to hand out after
    the team enters the correct password on its frontend. Each team has three attempts.
 5. Activate printed QR codes, unlock/start rounds. Global rounds may overlap. Pause
    preserves all individual data; resume reopens actions. Ending a round blocks remaining

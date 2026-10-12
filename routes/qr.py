@@ -24,6 +24,7 @@ def _qr_payload(challenge):
         "question_id": challenge.question_id,
         "room": challenge.room,
         "title": challenge.title, "clue": challenge.clue, "quiz_id": challenge.quiz_id,
+        "has_password": bool(challenge.password_hash),
         "status": challenge.status,
         "created_at": iso_utc(challenge.created_at),
         "updated_at": iso_utc(challenge.updated_at),
@@ -96,12 +97,19 @@ def create_qr():
         return jsonify(error="A custom QR number can only be used for one QR."), 400
     if custom_label and (len(custom_label) > 30 or not all(c.isalnum() or c == "-" for c in custom_label)):
         return jsonify(error="QR number must use letters, numbers or hyphens (30 characters maximum)."), 400
+    if event_round.number == 3 and not custom_label:
+        return jsonify(error="Enter a QR number for the Round 3 password QR."), 400
     if custom_label and QRChallenge.query.filter_by(qr_id=custom_label).first():
         return jsonify(error="QR number already exists."), 409
     title = str(data.get("title", "")).strip()
     clue = str(data.get("clue", "")).strip()
     if len(title) > 120 or len(clue) > 2000:
         return jsonify(error="Title or clue is too long."), 400
+    if event_round.number == 3 and (not title or not clue):
+        return jsonify(error="Enter a title and password riddle for the Round 3 QR."), 400
+    round3_password = str(data.get("password", "")) if event_round.number == 3 else ""
+    if event_round.number == 3 and (not round3_password or len(round3_password) > 300):
+        return jsonify(error="Enter a Round 3 password of 1 to 300 characters."), 400
     challenges = []
     for offset in range(count):
         label = custom_label or f"{prefix}{number + offset:03d}"
@@ -109,14 +117,15 @@ def create_qr():
                                 question_id=question.id if question else None, room=room,
                                 quiz_id=quiz.id if event_round.number == 2 else None,
                                 title=title, clue=clue, expires_at=expires_at)
+        if event_round.number == 3:
+            challenge.set_password(round3_password)
         db.session.add(challenge)
         challenges.append(challenge)
     if event_round.number == 3:
         if question:
             from services.event import EventError
             raise EventError("Round 3 uses a password riddle and offline sheets; do not attach an online question.", 400)
-        from routes.operations import create_round3_config
-        create_round3_config({**data, "password_clue": clue}, qr=challenges[0])
+        # The QR is created independently. Assign it to teams later from Team Management.
     db.session.flush()
     audit("QR generated", challenges[0].qr_id, {"round": event_round.number, "count": count})
     db.session.commit()
@@ -146,6 +155,7 @@ def permanently_delete_qr(qr_pk):
     if (ScanLog.query.filter_by(qr_id=challenge.id).first()
             or any(row.status == "VALID" for row in scan_events)
             or Team.query.filter_by(assigned_qr_id=challenge.id).first()
+            or Team.query.filter_by(assigned_round2_qr_id=challenge.id).first()
             or Desktop.query.filter_by(qr_id=challenge.id).first()
             or offline_qr_config(challenge.id)):
         return jsonify(error="This QR has scan, team, or desktop history. Archive it to preserve its records."), 409
@@ -405,6 +415,7 @@ def edit_qr(qr_pk):
             return jsonify(error="Select a valid round."), 400
     from models import Desktop
     linked = (offline_qr_config(challenge.id) or Team.query.filter_by(assigned_qr_id=challenge.id).first()
+              or Team.query.filter_by(assigned_round2_qr_id=challenge.id).first()
               or Desktop.query.filter_by(qr_id=challenge.id).first())
     def changed_id(key, current):
         if key not in data:
@@ -416,8 +427,6 @@ def edit_qr(qr_pk):
     offline = offline_qr_config(challenge.id)
     if offline and offline.started_at and {"clue", "room", "title", "question_id", "quiz_id", "round_id", "qr_id"}.intersection(data):
         return jsonify(error="Round 3 configuration cannot change after the team enters the round."), 409
-    if not offline and event_round.number == 3:
-        return jsonify(error="Configure Round 3 password QRs in Event Operations."), 400
     identity_changed = (
         ("qr_id" in data and str(data["qr_id"]).strip() != challenge.qr_id)
         or changed_id("round_id", challenge.round_id)

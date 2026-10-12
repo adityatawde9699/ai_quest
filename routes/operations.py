@@ -12,7 +12,6 @@ from models import (OfflineRound3, ActivityLog, Admin, Answer, Batch, Desktop, D
 from routes.common import admin_required, super_admin_required, audit, iso_utc, emit_activity
 from services.event import EventError, event_config, set_score
 from utils.qr_generator import render_qr, scan_url
-from utils.security import new_qr_token
 
 operations_bp = Blueprint("operations", __name__)
 KINDS = {"MCQ", "TRUE/FALSE", "SHORT ANSWER", "NUMERICAL", "LOGICAL", "CODE OUTPUT", "AI/TECHNICAL"}
@@ -131,39 +130,23 @@ def edit_quiz(quiz_id):
     return jsonify(ok=True)
 
 
-def create_round3_config(values, qr=None):
-    unlocked()
-    team = db.get_or_404(Team, integer(values.get("team_id"), 1))
-    if team.status in ("DISABLED", "DISQUALIFIED", "COMPLETED"):
-        raise EventError("Select an eligible team.")
-    if OfflineRound3.query.filter_by(team_id=team.id).first():
-        raise EventError("This team already has its Round 3 password QR. Edit it below.")
-    password = str(values.get("password", ""))
-    password_clue = str(values.get("password_clue", "")).strip()
-    room = str(values.get("room", "")).strip()
-    if not password or len(password) > 300 or not password_clue or len(password_clue) > 2000 or len(room) > 120:
-        raise EventError("Enter a password riddle, a password (up to 300 characters), and a room (up to 120 characters).", 400)
-    if qr is None:
-        row = Round.query.filter_by(number=3).one()
-        qr = QRChallenge(qr_id="R3-PASSWORD-"+new_qr_token()[:10], secure_token=new_qr_token(),
-                         round_id=row.id, title=f"{team.team_id} · Password riddle",
-                         clue=password_clue, room=room, status="INACTIVE")
-        db.session.add(qr)
-    db.session.flush()
-    config = OfflineRound3(team_id=team.id, password_qr_id=qr.id,
-                           max_points=integer(values.get("max_points", 100)))
-    config.set_password(password)
-    db.session.add(config)
-    audit("OFFLINE_ROUND3_CONFIGURED", team.team_id)
-    db.session.flush()
-    return config
-
-
 @operations_bp.route("/api/admin/round3", methods=["GET", "POST"])
 @admin_required
 def offline_round3():
     if request.method == "POST":
-        config = create_round3_config(data())
+        unlocked()
+        values = data()
+        team = db.get_or_404(Team, integer(values.get("team_id"), 1))
+        if values.get("password_qr_id") in (None, ""):
+            raise EventError("Select a Round 3 QR to assign to this team.", 400)
+        from routes.teams import _qr_batch_conflict, _set_round3_qr
+        _set_round3_qr(team, values.get("password_qr_id"), values.get("max_points", 100))
+        if _qr_batch_conflict(team, team.batch_id):
+            raise EventError("This batch already has a team assigned that Round 3 QR.", 409)
+        config = OfflineRound3.query.filter_by(team_id=team.id).first()
+        if not config:
+            raise EventError("Select a Round 3 QR to assign to this team.", 400)
+        audit("OFFLINE_ROUND3_QR_ASSIGNED", team.team_id, {"qr_id": config.password_qr.qr_id})
         db.session.commit()
         return jsonify(id=config.id, password_qr_id=config.password_qr_id), 201
     return jsonify([dict(id=c.id, team_id=c.team_id, team=c.team.team_id,
@@ -198,7 +181,9 @@ def edit_offline_round3(config_id):
         value = str(values["password"])
         if not value or len(value) > 300:
             raise EventError("Enter a password of 1–300 characters.", 400)
-        config.set_password(value)
+        config.password_qr.set_password(value)
+        for linked_config in OfflineRound3.query.filter_by(password_qr_id=config.password_qr_id):
+            linked_config.set_password(value)
     if "room" in values:
         room = str(values["room"]).strip()
         if len(room) > 120:

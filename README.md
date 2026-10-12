@@ -13,8 +13,10 @@ the team's Scan QR button opens the device's photo or image picker and decodes t
 image locally; supported phones may offer the rear camera there. Use HTTPS for continuous
 live scanning. The manual QR link field remains available on both HTTP and HTTPS.
 
-Round 3 uses one assigned password-riddle QR per team. Teams enter the password on their
-frontend, with exactly three attempts. After a correct password, an organizer hands over
-the question sheet. Teams answer on paper; admins record handover, returned sheets, and
-human marks in Event Operations. Apply database migrations before starting this version;
-see [Admin guide](docs/ADMIN_GUIDE.md).
+Create Round 3 password-riddle QRs in QR Management using a QR number, title, riddle, and
+password. Assign the appropriate QR to each team from Team Management, just like Round 1.
+The same Round 3 QR can be assigned across batches, once per batch. Teams get three
+password attempts; after a correct password, an organizer hands over the question sheet.
+Teams answer on paper; admins record handover, returned sheets, and human marks in Event
+Operations. Apply database migrations before starting this version; see the
+[Admin guide](docs/ADMIN_GUIDE.md).

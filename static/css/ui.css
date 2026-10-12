@@ -26,3 +26,85 @@ body{line-height:1.5}.eyebrow{font-size:11px;color:#626d82;letter-spacing:1.5px}
 
 /* Consistent navigation pictograms: local inline SVG, no icon font dependency. */
 .nav-icon{display:block;width:20px;height:20px;flex-shrink:0;color:currentColor}.nav-item{gap:13px}.nav-item>.nav-icon{color:#93a0bd;transition:color .15s ease}.nav-item:hover>.nav-icon{color:#dce5ff}.nav-item.active>.nav-icon{color:#f5ad67}.icon-button .nav-icon{width:20px;height:20px}
+
+/* Team dashboard: phone-first spacing, touch targets and readable quiz flow. */
+.team-page .team-stat,.team-page .team-action-panel,.team-page .team-leaderboard,.team-page .team-rounds-section{border-radius:16px}
+.team-page .team-stat,.team-page .team-leaderboard,.team-page .team-rounds-section{box-shadow:0 8px 26px #18244c08}
+.team-page .scan-result,.team-page .quiz-box{overflow-wrap:anywhere}
+.team-page .quiz-box{scroll-margin-top:18px}
+.team-page .challenge-heading{align-items:flex-start;margin:20px 0 12px}
+.team-page .challenge-progress-wrap{display:grid;justify-items:end;gap:7px;min-width:112px}
+.team-page .progress-track{display:block;width:100%;height:6px;overflow:hidden;border-radius:99px;background:#e8ebf4}
+.team-page .progress-track i{display:block;width:var(--progress,0%);height:100%;border-radius:inherit;background:var(--blue);transition:width .2s ease}
+.team-page .question-row{display:grid;grid-template-columns:32px minmax(0,1fr);align-items:start;gap:10px 12px}
+.team-page .question-number{display:grid;place-items:center;width:30px;height:30px;border-radius:9px;background:#eef1ff;color:var(--blue);font-size:11px;font-weight:800;font-variant-numeric:tabular-nums}
+.team-page .question-prompt{align-self:center;min-width:0;overflow-wrap:anywhere;font-weight:650}
+.team-page .question-row select,.team-page .question-row textarea{grid-column:1/-1;min-height:52px;line-height:1.45}
+.team-page #challenge-form>.button{width:100%;min-height:54px;margin:4px 0 20px;font-size:15px}
+.team-page #save-status{scroll-margin-top:90px}
+.team-page .completion-card{scroll-margin-top:20px;overflow-wrap:anywhere}
+@media(max-width:760px){
+  .team-page .team-header{position:sticky;top:0;z-index:5;height:auto;min-height:72px;padding:8px 14px;background:#fffdf8ed;backdrop-filter:blur(14px);padding-top:max(8px,env(safe-area-inset-top))}
+  .team-page .team-header .festival-identity{width:60px}
+  .team-page .team-header .side-brand>span:last-child{font-size:10px;letter-spacing:.3px}
+  .team-page .team-header .side-brand small{font-size:8px;letter-spacing:.4px}
+  .team-page .team-head-right{gap:0}
+  .team-page .team-head-right form{margin:0}
+  .team-page .team-head-right .button{min-height:44px;padding:0 12px;border-radius:11px}
+  .team-page .team-main{width:min(100%,620px);padding:22px 14px calc(34px + env(safe-area-inset-bottom))}
+  .team-page .team-welcome{align-items:center;gap:10px;margin-bottom:17px}
+  .team-page .team-welcome .eyebrow{margin-bottom:4px;font-size:10px}
+  .team-page .team-welcome h1{font-size:clamp(22px,6vw,28px);line-height:1.12}
+  .team-page #team-id,.team-page #team-batch{margin:4px 0 0;font-size:12px}
+  .team-page .status-badge{flex:0 0 auto;max-width:130px;padding:7px 9px;border-radius:999px;font-size:10px;text-align:center}
+  .team-page .team-stat-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin-bottom:12px}
+  .team-page .team-stat-grid .team-stat:first-child{grid-column:1/-1;min-height:94px}
+  .team-page .team-stat{display:flex;min-width:0;min-height:103px;flex-direction:column;align-items:flex-start;justify-content:center;gap:3px;padding:12px 14px}
+  .team-page .team-stat span{font-size:10px;font-weight:750;letter-spacing:.8px}
+  .team-page .team-stat strong{max-width:100%;margin:2px 0;font-size:clamp(19px,5.5vw,24px);line-height:1.15;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+  .team-page .team-stat small{font-size:11px;line-height:1.3}
+  .team-page .team-action-panel{padding:18px 15px;border-top-width:3px}
+  .team-page .team-action-panel .panel-heading{align-items:center;gap:10px}
+  .team-page .team-action-panel h2{font-size:22px;line-height:1.2}
+  .team-page .round-orbit{width:42px;height:42px;flex:0 0 42px;font-size:13px}
+  .team-page #action-copy{margin:0;font-size:14px;line-height:1.55}
+  .team-page .team-actions{display:grid;grid-template-columns:1fr;gap:9px;margin:17px 0}
+  .team-page .team-actions .button{width:100%;min-height:52px;border-radius:12px;font-size:15px}
+  .team-page .scan-fallback{margin-top:12px;padding:2px 0}
+  .team-page .scan-fallback summary{min-height:44px;display:flex;align-items:center;font-size:13px}
+  .team-page .manual-scan{padding-top:12px}
+  .team-page .manual-scan input,.team-page .manual-scan button{min-height:50px;border-radius:11px}
+  .team-page .scan-result{padding:15px;border-radius:13px;font-size:14px;line-height:1.55}
+  .team-page #round3-box{padding:16px 14px;border-radius:14px}
+  .team-page #round3-box h3{font-size:19px}
+  .team-page #round3-box p{font-size:14px;line-height:1.55}
+  .team-page #round3-password-form input,.team-page #round3-password-form .button,.team-page #complete-round3{width:100%;min-height:52px;border-radius:11px;font-size:15px}
+  .team-page .team-leaderboard{padding:16px 15px}
+  .team-page .team-rounds-section{margin-top:12px;padding:16px 14px}
+  .team-page .team-rounds-section>.panel-heading{margin-bottom:12px}
+  .team-page .team-round-step{padding:13px;border-radius:12px}
+  .team-page .team-round-step strong{font-size:13px}
+  .team-page .team-round-step small{font-size:11px;line-height:1.4}
+  .team-page .challenge-heading{position:sticky;top:80px;z-index:2;padding:10px 0;background:#faf8f2f2;backdrop-filter:blur(10px)}
+  .team-page .challenge-heading h3{font-size:20px}
+  .team-page .challenge-progress-wrap{min-width:104px}
+  .team-page .challenge-progress{font-size:11px;white-space:nowrap}
+  .team-page .question-row{grid-template-columns:30px minmax(0,1fr);gap:10px;padding:14px 12px;margin-bottom:10px;border-radius:14px;font-size:15px}
+  .team-page .question-number{width:28px;height:28px}
+  .team-page .question-row select,.team-page .question-row textarea{min-height:54px;padding:13px;border-radius:11px;font-size:16px}
+  .team-page #save-status{position:sticky;top:132px;padding:10px 12px;border-radius:11px;font-size:12px;line-height:1.4}
+  .team-page .completion-card{padding:18px 15px;border-radius:14px}
+  .team-page .completion-card h3{font-size:19px}
+  .team-page .completion-card p{font-size:14px;line-height:1.55}
+}
+@media(max-width:380px){
+  .team-page .team-main{padding-right:10px;padding-left:10px}
+  .team-page .team-header{padding-right:10px;padding-left:10px}
+  .team-page .team-header .festival-identity{width:52px}
+  .team-page .team-header .side-brand{gap:6px}
+  .team-page .team-header .team-head-right .button{padding:0 9px;font-size:12px}
+  .team-page .status-badge{max-width:104px}
+  .team-page .team-stat{padding:10px}
+  .team-page .team-action-panel{padding-right:12px;padding-left:12px}
+  .team-page .challenge-progress-wrap{min-width:92px}
+}

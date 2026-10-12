@@ -11,8 +11,9 @@
 - [ ] Create teams with 1–3 members; privately distribute IDs/PINs; assign envelope QRs.
 - [ ] Create every Round 1 clue/destination and every destination quiz with exactly ten MCQs.
 - [ ] Ensure destination room labels match; verify question keys/marks and quiz order.
-- [ ] Configure each team’s Round 3 password riddle and maximum paper marks; prepare a human judging rubric.
-- [ ] Print one password QR per team and prepare physical question/answer sheets for organizer handover.
+- [ ] Create Round 3 password QRs in QR Management with QR number, title, riddle, and password.
+- [ ] Assign the appropriate Round 3 QR and maximum paper marks to each team in Team Management; use a QR no more than once per batch.
+- [ ] Print the assigned password QRs and prepare physical question/answer sheets for organizer handover.
 - [ ] Generate QR PNGs against the canonical HTTPS host, print and physically place them.
 - [ ] Scan **every printed code** on actual phones; verify inactive/incorrect codes are rejected.
 - [ ] Test phone QR scanning, password entry, and organizer collection/submission/judging controls.
