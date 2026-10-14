@@ -314,15 +314,52 @@
       };
     }catch(error){host.textContent=error.message;}
   }
+  function setupQuestionTypeForm(form) {
+    const kinds = ['MCQ','MISSING WORDS','FILL IN THE BLANK','TRUE/FALSE'];
+    const answerOptions = kind => kind === 'TRUE/FALSE'
+      ? [['TRUE','True'],['FALSE','False']]
+      : [['A','Option A'],['B','Option B'],['C','Option C'],['D','Option D']];
+    const update = () => {
+      const kind = form.elements.kind.value;
+      const isTrueFalse = kind === 'TRUE/FALSE';
+      const optionGroup = form.querySelector('[data-question-options]');
+      optionGroup.hidden = isTrueFalse;
+      for (const key of ['a','b','c','d']) {
+        const input = form.elements[`option_${key}`];
+        input.disabled = isTrueFalse;
+        input.required = !isTrueFalse;
+      }
+      const answer = form.elements.correct_answer;
+      const previous = answer.value;
+      const choices = answerOptions(kind);
+      answer.innerHTML = choices.map(([value,label]) => `<option value="${value}">${label}</option>`).join('');
+      answer.value = choices.some(([value]) => value === previous) ? previous : choices[0][0];
+      const hint = form.querySelector('[data-question-hint]');
+      if (hint) hint.textContent = kind === 'MISSING WORDS'
+        ? 'Write the sentence and put ____ where the missing word belongs. Provide four choices.'
+        : kind === 'FILL IN THE BLANK'
+          ? 'Write a sentence with ____ for the blank. Teams choose the right word from four options.'
+          : kind === 'TRUE/FALSE'
+            ? 'Teams choose True or False for the statement.'
+            : 'Enter four answer options, then choose the correct option.';
+    };
+    form.elements.kind.addEventListener('change', update);
+    update();
+    return update;
+  }
+
   async function loadQuestions() {
     try {
       const rows = await api('/api/admin/questions');
+      const round2Rows = rows.filter(question => question.round === 2);
       loadQuestionSets();
-      document.getElementById('questions-list').innerHTML = rows.length ? rows.map(q => `<div class="question-row"><strong>R${q.round} · ${esc(q.prompt)}</strong><small>${q.points} pts · ${q.time_limit}s · key ${esc(q.correct_answer)} <button class="text-button" data-question-edit="${q.id}">Edit</button> <button class="text-button" data-question-toggle="${q.id}" data-active="${q.active}">${q.active?'Deactivate':'Activate'}</button> <button class="text-button danger-text" data-question-delete="${q.id}">Delete</button></small></div>`).join('') : '<div class="empty-state">No questions added yet.</div>';
+      document.getElementById('questions-list').innerHTML = round2Rows.length ? round2Rows.map(q => `<div class="question-row"><strong>${esc(q.kind)} · ${esc(q.prompt)}</strong><small>${q.points} pts · ${q.time_limit}s · key ${esc(q.correct_answer)} · ${q.active?'Active':'Inactive'} <button class="text-button" data-question-edit="${q.id}">Edit</button> <button class="text-button" data-question-toggle="${q.id}" data-active="${q.active}">${q.active?'Deactivate':'Activate'}</button> <button class="text-button danger-text" data-question-delete="${q.id}">Delete</button></small></div>`).join('') : '<div class="empty-state">No Round 2 questions added yet.</div>';
       document.querySelectorAll('[data-question-edit]').forEach(button => button.onclick = () => {
-        const question = rows.find(item => item.id === Number(button.dataset.questionEdit));
-        modal('Edit question', `<form id="edit-question" class="form-panel"><label>Question<textarea name="prompt" maxlength="2000" required rows="3">${esc(question.prompt)}</textarea></label><div class="form-grid two"><label>Type<select name="kind">${['MCQ','TRUE/FALSE','SHORT ANSWER','NUMERICAL','LOGICAL','CODE OUTPUT','AI/TECHNICAL'].map(kind=>`<option value="${kind}" ${kind===question.kind?'selected':''}>${kind}</option>`).join('')}</select></label><label>Order<input name="position" type="number" min="0" value="${question.position}"></label></div><div class="form-grid two">${['a','b','c','d'].map(key => `<label>Option ${key.toUpperCase()}<input name="option_${key}" value="${esc(question[`option_${key}`])}" maxlength="300"></label>`).join('')}</div><div class="form-grid two"><label>Correct answer / key<input name="correct_answer" maxlength="300" required value="${esc(question.correct_answer)}"></label><label>Points<input name="points" type="number" min="0" max="10000" value="${question.points}"></label><label>Time limit · seconds<input name="time_limit" type="number" min="5" max="3600" value="${question.time_limit}"></label></div><p class="subtle">Questions already used by a quiz cannot be changed.</p><button class="button primary" type="submit">Save changes</button></form>`, host => {
-          host.querySelector('#edit-question').onsubmit = async event => {
+        const question = round2Rows.find(item => item.id === Number(button.dataset.questionEdit));
+        modal('Edit Round 2 question', `<form id="edit-question" class="form-panel"><label>Question format<select name="kind">${['MCQ','MISSING WORDS','FILL IN THE BLANK','TRUE/FALSE'].map(kind=>`<option value="${kind}" ${kind===question.kind?'selected':''}>${kind}</option>`).join('')}</select></label><label>Question<textarea name="prompt" maxlength="2000" required rows="3">${esc(question.prompt)}</textarea></label><p class="subtle" data-question-hint></p><fieldset data-question-options class="form-grid two"><legend>Answer options</legend>${['a','b','c','d'].map(key => `<label>Option ${key.toUpperCase()}<input name="option_${key}" value="${esc(question[`option_${key}`])}" maxlength="300" required></label>`).join('')}</fieldset><div class="form-grid two"><label>Correct answer<select name="correct_answer" required><option value="A" ${question.correct_answer==='A'?'selected':''}>Option A</option><option value="B" ${question.correct_answer==='B'?'selected':''}>Option B</option><option value="C" ${question.correct_answer==='C'?'selected':''}>Option C</option><option value="D" ${question.correct_answer==='D'?'selected':''}>Option D</option><option value="TRUE" ${question.correct_answer==='TRUE'?'selected':''}>True</option><option value="FALSE" ${question.correct_answer==='FALSE'?'selected':''}>False</option></select></label><label>Points<input name="points" type="number" min="0" max="10000" value="${question.points}"></label><label>Time limit · seconds<input name="time_limit" type="number" min="5" max="3600" value="${question.time_limit}"></label><label>Display order<input name="position" type="number" min="0" value="${question.position}"></label></div><p class="subtle">Questions already used by a quiz cannot be changed.</p><button class="button primary" type="submit">Save changes</button></form>`, host => {
+          const form = host.querySelector('#edit-question');
+          setupQuestionTypeForm(form);
+          form.onsubmit = async event => {
             event.preventDefault();
             try { await api(`/api/admin/questions/${question.id}`, {method:'PATCH',body:JSON.stringify(Object.fromEntries(new FormData(event.currentTarget)))}); host.innerHTML=''; toast('Question updated'); loadQuestions(); }
             catch(error) { toast(error.message,true); }
@@ -334,7 +371,9 @@
     }
     catch(error){toast(error.message,true);}
   }
-  document.getElementById('question-form').onsubmit=async event=>{event.preventDefault();const data=Object.fromEntries(new FormData(event.currentTarget));try{await api('/api/admin/questions',{method:'POST',body:JSON.stringify(data)});event.currentTarget.reset();toast('Question saved');loadQuestions();}catch(error){toast(error.message,true);}};
+  const addQuestionForm=document.getElementById('question-form');
+  const resetQuestionTypeForm=setupQuestionTypeForm(addQuestionForm);
+  addQuestionForm.onsubmit=async event=>{event.preventDefault();const form=event.currentTarget,data=Object.fromEntries(new FormData(form));try{await api('/api/admin/questions',{method:'POST',body:JSON.stringify(data)});form.reset();resetQuestionTypeForm();toast('Round 2 question saved');loadQuestions();}catch(error){toast(error.message,true);}};
   async function loadRounds() {
     try {
       const rounds = await api('/api/rounds');

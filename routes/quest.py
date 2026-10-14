@@ -125,8 +125,10 @@ def begin_quiz(team, qr):
     if not quiz or not quiz.active:
         raise EventError("The destination QR must identify an active quiz.")
     questions = [link.question for link in quiz.questions]
-    if len(questions) != 10 or any(not q.active or q.round.number != 2 for q in questions):
-        raise EventError("Quiz requires exactly ten active Round 2 questions.")
+    from routes.operations import ROUND2_KINDS
+    if len(questions) != 10 or any(
+            not q.active or q.round.number != 2 or q.kind not in ROUND2_KINDS for q in questions):
+        raise EventError("Quiz requires exactly ten active Round 2 questions in supported formats.")
     start_round(team, 2)
     attempt = QuizAttempt(team_id=team.id, quiz_id=quiz.id, assignments=[snapshot(q) for q in questions])
     db.session.add(attempt)
@@ -166,11 +168,14 @@ def save_quiz_answer(question_id):
     attempt = QuizAttempt.query.filter_by(team_id=current_user.id).first()
     if not attempt or attempt.submitted_at:
         raise EventError("Quiz is unavailable or already submitted.")
-    if question_id not in [q["id"] for q in attempt.assignments]:
+    question = next((q for q in attempt.assignments if q["id"] == question_id), None)
+    if not question:
         raise EventError("Question not assigned to your team.", 404)
     value = str((request.get_json(silent=True) or {}).get("answer", "")).upper()
-    if value not in "ABCD" or len(value) != 1:
-        raise EventError("Select A, B, C, or D.", 400)
+    allowed = {"TRUE", "FALSE"} if question["kind"] == "TRUE/FALSE" else {"A", "B", "C", "D"}
+    if value not in allowed:
+        choices = "TRUE or FALSE" if question["kind"] == "TRUE/FALSE" else "A, B, C, or D"
+        raise EventError(f"Select {choices}.", 400)
     answer = Answer.query.filter_by(team_id=current_user.id, question_id=question_id).one()
     answer.selected_answer, answer.answer_time = value, utcnow()
     audit("QUESTION_ANSWERED", current_user.team_id, {"question_id": question_id})

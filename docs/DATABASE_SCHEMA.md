@@ -9,7 +9,7 @@ Exactly three Round records are seeded; global status and Team.state are indepen
 | team / team_member | Unique Team ID, hashed PIN, independent eligibility/status and state, assigned Round 1 and optional Round 2 QR; 1–3 members validated by administration |
 | event | Singleton configuration, active flag, marks/count/destination, result lock/publication and write serialization version |
 | round / round_session | Global round status; unique team/round session with authoritative start/completion timestamps |
-| question | Reused bank for clues, Round 2 MCQs; legacy Round 3 questions are retained; ordering, active flag, key and marks |
+| question | Round 2 MCQ, Missing Words, Fill in the Blank, and True/False bank; legacy question records remain supported by the schema |
 | qr_challenge | Existing QR table retained; unique opaque token and label, round, quiz, clue/title/destination, hashed Round 3 password and active/archive status |
 | scan_log | Existing unique successful team/QR record retained |
 | qr_scan_event | Every recognized/unrecognized, anonymous, repeated or rejected scan, nullable team/QR, timestamp/status/IP/UA |

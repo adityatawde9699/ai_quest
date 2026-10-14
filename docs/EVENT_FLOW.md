@@ -22,7 +22,8 @@ must be repaired before printing. The riddle answer is never embedded in the QR 
 
 ## Round 2
 
-A destination QR references a named quiz containing exactly ten active MCQs. Scanning
+A destination QR references a named quiz containing exactly ten active Round 2 questions
+(MCQ, Missing Words, Fill in the Blank, or True/False). Scanning
 starts and fixes the team's quiz assignment. Responses save individually; refresh reloads
 them. All ten must be answered before final submission. The new quiz has no per-question
 countdown: the specification did not require one, and the old countdown conflicted with

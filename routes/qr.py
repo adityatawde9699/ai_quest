@@ -234,15 +234,11 @@ def qr_scans(qr_pk):
 @admin_required
 def add_question():
     data = request.get_json(silent=True) or {}
-    event_round = db.session.get(Round, data.get("round_id"))
+    event_round = Round.query.filter_by(number=2).first()
     prompt = str(data.get("prompt", "")).strip()
     answer = str(data.get("correct_answer", "")).strip()
     if not event_round or not prompt or len(prompt) > 2000:
-        return jsonify(error="Select a round and enter a question (2,000 characters maximum)."), 400
-    if not answer or len(answer) > 300:
-        return jsonify(error="Enter a correct answer of 1 to 300 characters."), 400
-    if event_round.number == 2 and answer.upper() not in {"A", "B", "C", "D"}:
-        return jsonify(error="Quiz correct answer must be A, B, C, or D."), 400
+        return jsonify(error="Enter a Round 2 question (2,000 characters maximum)."), 400
     try:
         points = int(data.get("points", 10))
         time_limit = int(data.get("time_limit", 60))
@@ -250,15 +246,15 @@ def add_question():
         return jsonify(error="Points and time limit must be whole numbers."), 400
     if not 0 <= points <= 10000 or not 5 <= time_limit <= 3600:
         return jsonify(error="Points must be 0-10,000 and time limit 5-3,600 seconds."), 400
-    from routes.operations import KINDS, integer
+    from routes.operations import KINDS, ROUND2_KINDS, integer
     position = integer(data.get("position", 0))
     kind = str(data.get("kind", "MCQ")).upper()
-    if kind not in KINDS or (event_round.number == 2 and kind != "MCQ"):
-        return jsonify(error="Select a supported question type; Round 2 requires MCQ."), 400
-    if kind == "MCQ" and event_round.number in (2, 3) and any(not str(data.get("option_"+key, "")).strip() for key in "abcd"):
-        return jsonify(error="All four MCQ options are required."), 400
-    if kind == "MCQ" and event_round.number == 3 and answer.upper() not in {"A", "B", "C", "D"}:
-        return jsonify(error="MCQ answer must be A, B, C, or D."), 400
+    if kind not in KINDS or kind not in ROUND2_KINDS:
+        return jsonify(error="Choose MCQ, Missing Words, Fill in the Blank, or True/False."), 400
+    if kind != "TRUE/FALSE" and any(not str(data.get("option_"+key, "")).strip() for key in "abcd"):
+        return jsonify(error="Enter all four answer options."), 400
+    if kind != "TRUE/FALSE" and answer.upper() not in {"A", "B", "C", "D"}:
+        return jsonify(error="Choose the correct option A, B, C, or D."), 400
     if kind == "TRUE/FALSE" and answer.upper() not in ("TRUE", "FALSE"):
         return jsonify(error="True/False key must be TRUE or FALSE."), 400
     question = Question(
@@ -270,7 +266,7 @@ def add_question():
         option_b=str(data.get("option_b", ""))[:300],
         option_c=str(data.get("option_c", ""))[:300],
         option_d=str(data.get("option_d", ""))[:300],
-        correct_answer=answer.upper() if event_round.number == 2 else answer,
+        correct_answer=answer.upper(),
         points=points,
         time_limit=time_limit,
     )
@@ -332,8 +328,11 @@ def edit_question(question_id):
         answer = str(data["correct_answer"]).strip()
         if not answer or len(answer) > 300:
             return jsonify(error="Enter a correct answer of 1 to 300 characters."), 400
-        if question.round.number == 2 and answer.upper() not in {"A", "B", "C", "D"}:
-            return jsonify(error="Quiz correct answer must be A, B, C, or D."), 400
+        kind = str(data.get("kind", question.kind)).upper()
+        if question.round.number == 2 and (
+                (kind == "TRUE/FALSE" and answer.upper() not in {"TRUE", "FALSE"})
+                or (kind != "TRUE/FALSE" and answer.upper() not in {"A", "B", "C", "D"})):
+            return jsonify(error="Select a valid correct answer for this question type."), 400
         question.correct_answer = answer.upper() if question.round.number == 2 else answer
     try:
         points = int(data.get("points", question.points))
@@ -352,10 +351,11 @@ def edit_question(question_id):
         from routes.operations import integer
         question.position = integer(data["position"])
     if "kind" in data:
-        from routes.operations import KINDS
-        if data["kind"] not in KINDS or (question.round.number == 2 and data["kind"] != "MCQ"):
+        from routes.operations import KINDS, ROUND2_KINDS
+        kind = str(data["kind"]).upper()
+        if kind not in KINDS or (question.round.number == 2 and kind not in ROUND2_KINDS):
             return jsonify(error="Invalid question type."), 400
-        question.kind = data["kind"]
+        question.kind = kind
     validate_question(question, question.round.number)
     audit("Question updated", question.id, {"active": question.active})
     db.session.commit()
@@ -499,7 +499,13 @@ def edit_qr(qr_pk):
 
 def validate_question(question, number):
     from services.event import EventError
-    if question.kind == "MCQ" and number in (2, 3):
+    from routes.operations import ROUND2_KINDS
+    if number == 2 and question.kind not in ROUND2_KINDS:
+        raise EventError("Round 2 questions must use MCQ, Missing Words, Fill in the Blank, or True/False.", 400)
+    if number == 2 and question.kind != "TRUE/FALSE":
+        if question.correct_answer.upper() not in "ABCD" or len(question.correct_answer) != 1 or any(not getattr(question, "option_"+key).strip() for key in "abcd"):
+            raise EventError("Selection questions require four nonempty options and a key A–D.", 400)
+    if question.kind == "MCQ" and number == 3:
         if question.correct_answer.upper() not in "ABCD" or len(question.correct_answer) != 1 or any(not getattr(question, "option_"+key).strip() for key in "abcd"):
             raise EventError("MCQs require four nonempty options and a key A–D.", 400)
     if question.kind == "TRUE/FALSE" and question.correct_answer.upper() not in ("TRUE", "FALSE"):

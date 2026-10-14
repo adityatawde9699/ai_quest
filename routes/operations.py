@@ -14,7 +14,8 @@ from services.event import EventError, event_config, set_score
 from utils.qr_generator import render_qr, scan_url
 
 operations_bp = Blueprint("operations", __name__)
-KINDS = {"MCQ", "TRUE/FALSE", "SHORT ANSWER", "NUMERICAL", "LOGICAL", "CODE OUTPUT", "AI/TECHNICAL"}
+KINDS = {"MCQ", "MISSING WORDS", "FILL IN THE BLANK", "TRUE/FALSE", "SHORT ANSWER", "NUMERICAL", "LOGICAL", "CODE OUTPUT", "AI/TECHNICAL"}
+ROUND2_KINDS = {"MCQ", "MISSING WORDS", "FILL IN THE BLANK", "TRUE/FALSE"}
 
 
 def data():
@@ -73,8 +74,8 @@ def configure_quiz(quiz, ids):
     if not isinstance(ids, list) or len(ids) != 10 or len({str(i) for i in ids}) != 10 or any(isinstance(i, (dict,list)) for i in ids):
         raise EventError("Select exactly ten different questions in order.", 400)
     questions = [db.session.get(Question, integer(pk, 1)) for pk in ids]
-    if any(not q or q.round.number != 2 or not q.active for q in questions):
-        raise EventError("Use ten active Round 2 questions.", 400)
+    if any(not q or q.round.number != 2 or not q.active or q.kind not in ROUND2_KINDS for q in questions):
+        raise EventError("Use ten active Round 2 questions in a supported quiz format.", 400)
     QuizQuestion.query.filter_by(quiz_id=quiz.id).delete()
     db.session.flush()
     for position, question in enumerate(questions, 1):

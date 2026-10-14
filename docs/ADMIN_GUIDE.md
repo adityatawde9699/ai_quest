@@ -24,9 +24,10 @@ The header reports the live connection separately from the event's active/paused
    quiz, then assign the appropriate Round 2 QR from the same team editor. The same Round 2
    QR can be reused across batches, once per batch. Match Round 1 destination and Round 2
    room strings exactly.
-3. Create Round 2 MCQs with all four options and correct keys. Select exactly ten in the
-   quiz builder. Questions appear by configured order; selected IDs define quiz order.
-   API clients can specify a different explicit ordering. Attach quiz ID to destination QR.
+3. In Questions & sets, create Round 2 questions as MCQ, Missing Words, Fill in the Blank,
+   or True/False. The first three formats use four options; select the correct option in
+   the form. Select exactly ten active questions in the quiz builder. Questions appear by
+   configured order; selected IDs define quiz order. Attach the quiz ID to its destination QR.
 4. In QR Management → Create QR, select Round 3 and enter its QR number, title, riddle, and
    password. Then open each team in Teams and assign its Round 3 password QR. The QR's
    riddle and password are shared by every team assigned that QR; assign it at most once

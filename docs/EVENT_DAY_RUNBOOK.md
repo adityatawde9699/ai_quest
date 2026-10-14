@@ -9,7 +9,7 @@
 - [ ] Install reviewed migrations and seed three rounds. Disable debug/automatic schema creation.
 - [ ] Verify admin roles, private passwords, login throttling and locked-score behavior.
 - [ ] Create teams with 1–3 members; privately distribute IDs/PINs; assign envelope QRs.
-- [ ] Create every Round 1 clue/destination and every destination quiz with exactly ten MCQs.
+- [ ] Create every Round 1 clue/destination and every destination quiz with ten Round 2 questions (MCQ, Missing Words, Fill in the Blank, or True/False).
 - [ ] Ensure destination room labels match; verify question keys/marks and quiz order.
 - [ ] Create Round 3 password QRs in QR Management with QR number, title, riddle, and password.
 - [ ] Assign the appropriate Round 3 QR and maximum paper marks to each team in Team Management; use a QR no more than once per batch.
